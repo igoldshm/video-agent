@@ -1,293 +1,256 @@
-"""The agent harness: a checkpointed, permissioned, budgeted loop around the tools.
+"""Video model providers behind one interface.
 
-plan -> choose models -> select assets -> per shot: generate -> evaluate -> revise/fail over
-     -> assemble -> evaluate final cut -> deliver (gated on creator approval)
-
-Every tool call goes through RunContext.step(), which records its output under a
-stable key. Re-running a run replays recorded steps instead of re-executing them,
-so resuming after a crash, an approval or a piece of feedback only pays for new work.
+ReplicateProvider calls a hosted text-to-video model. MockProvider renders real mp4
+files with ffmpeg and injects seeded failures and defects, so the harness (retries,
+evals, failover, resume) can be exercised for free and deterministically in tests
+and in demo mode.
 """
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import time
-from dataclasses import asdict, dataclass, field, fields
+from dataclasses import dataclass
+from typing import Protocol
 
-from .evals import VisionJudge
-from .planner import default_planner
-from .providers import default_providers
-from .registry import PermissionRequired, Registry, ToolFailed
-from .store import Store
-from .tools import build_registry
+import httpx
 
-DEFAULT_SCOPES = ["plan", "assets:read", "generate", "evaluate", "media:process"]
-AUTO = object()
+from . import media
+from .registry import ToolFailed, TransientError
+
+DEFECTS = ("black", "frozen", "off_palette", "short")
 
 
 @dataclass
-class Config:
-    name: str = "v3-failover"
-    providers: list[str] = field(default_factory=lambda: ["fastgen", "proline"])
-    tool_retries: int = 2            # retries on transient provider errors
-    evals: bool = True               # gate each clip on automated checks
-    judge: bool = False              # also ask the vision judge (needs real footage)
-    palette_check: bool = True       # pixel-level palette check (suits flat graphics only)
-    attempts_per_provider: int = 2   # generations per shot before failing over
-    budget_usd: float = 5.0
-    width: int = 320
-    height: int = 180
-    palette_tolerance: float = 40.0
-    max_shot_seconds: float = 6.0
-    max_total_seconds: float = 30.0
-    target_seconds: float = 0        # 0 = let the planner decide
-    project: str = "default"
+class GenRequest:
+    prompt: str
+    duration: float
+    width: int
+    height: int
+    palette: list[str]
+    seed: int
+    shot_id: str
+    noise_key: str = ""  # ties the mock's failure draws to the brief, not the run id
+    attempt: int = 0     # tool-level retry index
 
 
-PRESETS = {
-    "v1-naive": Config(name="v1-naive", providers=["fastgen"], tool_retries=0, evals=False,
-                       attempts_per_provider=1),
-    "v2-evals": Config(name="v2-evals", providers=["fastgen"], tool_retries=2, evals=True,
-                       attempts_per_provider=3),
-    "v3-failover": Config(),
-}
+class Provider(Protocol):
+    name: str
+    price_per_s: float
+    simulated: bool
+
+    def generate(self, req: GenRequest, out_path: str) -> None: ...
 
 
-class SimulatedCrash(Exception):
-    """Raised by the --crash-after test hook to stand in for the process dying."""
+def _draw(*parts) -> float:
+    h = hashlib.sha256("|".join(map(str, parts)).encode()).digest()
+    return int.from_bytes(h[:8], "big") / 2 ** 64
 
 
-class BudgetExceeded(Exception):
-    pass
+@dataclass
+class MockProvider:
+    name: str
+    price_per_s: float
+    p_error: float = 0.0
+    p_defect: float = 0.0
+    force_defect: str | None = None  # tests use this to produce one specific defect
+    delay_s: float = 0.0             # demo mode: pretend generation takes a moment
+    simulated: bool = True
+
+    def generate(self, req: GenRequest, out_path: str) -> None:
+        if self.delay_s:
+            time.sleep(self.delay_s)
+        if _draw(self.name, req.noise_key, req.shot_id, req.seed, "err", req.attempt) < self.p_error:
+            raise TransientError(f"{self.name}: 503 upstream timeout")
+        defect = self.force_defect
+        if defect is None and _draw(self.name, req.noise_key, req.shot_id, req.seed, "defect") < self.p_defect:
+            defect = DEFECTS[int(_draw(self.name, req.noise_key, req.shot_id, req.seed, "kind") * len(DEFECTS))]
+        self._render(req, out_path, defect)
+
+    def _render(self, req: GenRequest, out_path: str, defect: str | None) -> None:
+        os.makedirs(os.path.dirname(out_path), exist_ok=True)
+        size, dur = f"{req.width}x{req.height}", req.duration
+        c0, c1 = (c.lstrip("#") for c in req.palette[:2])
+        if defect == "short":
+            dur = req.duration * 0.4
+        if defect == "off_palette":  # style drift: complementary colours
+            c0, c1 = ("%06x" % (0xFFFFFF - int(c, 16)) for c in (c0, c1))
+        if defect == "black":
+            src = f"color=c=black:s={size}:r=12:d={dur}"
+        elif defect == "frozen":
+            r0, r1 = media.hex_rgb(c0), media.hex_rgb(c1)
+            mid = "%02x%02x%02x" % tuple((a + b) // 2 for a, b in zip(r0, r1))
+            src = f"color=c=0x{mid}:s={size}:r=12:d={dur}"
+        else:
+            # seeded and with fixed endpoints, so the same request always renders the same pixels
+            seed = int(_draw(self.name, req.noise_key, req.shot_id, req.seed, "pix") * 2 ** 31)
+            src = (f"gradients=s={size}:r=12:d={dur}:c0=0x{c0}:c1=0x{c1}:nb_colors=2:speed=0.2:"
+                   f"seed={seed}:x0=0:y0=0:x1={req.width}:y1={req.height}")
+        args = ["-f", "lavfi", "-i", src]
+        if os.path.exists(media.FONT) and defect not in ("black", "frozen"):
+            label = out_path + ".txt"
+            with open(label, "w") as f:
+                f.write(f"{req.shot_id}: {req.prompt[:60]}")
+            args += ["-vf", f"drawtext=fontfile={media.FONT}:textfile={label}:fontcolor=white:"
+                            f"fontsize={max(10, req.height // 16)}:x=8:y=h-th-8:box=1:boxcolor=black@0.35"]
+        args += ["-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", out_path]
+        media.ffmpeg(args)
+        if os.path.exists(out_path + ".txt"):
+            os.remove(out_path + ".txt")
 
 
-class ShotFailed(Exception):
-    def __init__(self, message: str, shot_id: str | None = None):
-        super().__init__(message)
-        self.shot_id = shot_id
+class ReplicateProvider:
+    """A text-to-video model hosted on Replicate.
 
+    Models name their inputs differently, so the adapter reads the model's published
+    input schema once and sends only the fields that model accepts.
+    """
 
-class RunContext:
-    def __init__(self, store: Store, registry: Registry, run_id: str, cfg: Config, state: dict,
-                 crash_after: int | None = None):
-        self.store, self.registry, self.run_id, self.cfg, self.state = store, registry, run_id, cfg, state
-        self.crash_after, self.executed, self.replaying = crash_after, 0, False
+    simulated = False
+    API = "https://api.replicate.com/v1"
 
-    def emit(self, kind: str, key: str = "", **data) -> None:
-        self.store.emit(self.run_id, kind, key, data)
+    def __init__(self, model: str, price_per_s: float, name: str | None = None, token: str | None = None,
+                 extra_inputs: dict | None = None, transport=None, poll_s: float = 3.0, timeout_s: float = 600):
+        self.model, self.price_per_s = model, price_per_s
+        self.name = name or model.split("/")[-1]
+        self.token = token or os.environ.get("REPLICATE_API_TOKEN", "")
+        self.extra_inputs = extra_inputs or {}
+        self.transport, self.poll_s, self.timeout_s = transport, poll_s, timeout_s
+        self._schema: dict | None = None
 
-    def decide(self, key: str, **data) -> None:
-        """Record why the agent chose its next move (once, not again on replay)."""
-        if not self.replaying:
-            self.emit("decision", key, **data)
+    # schema-aware inputs ------------------------------------------------------
+    def _input_schema(self, http: httpx.Client) -> dict:
+        if self._schema is None:
+            self._schema = {}
+            try:
+                r = http.get(f"{self.API}/models/{self.model}")
+                if r.status_code == 200:
+                    version = r.json().get("latest_version") or {}
+                    schemas = version.get("openapi_schema", {}).get("components", {}).get("schemas", {})
 
-    def step(self, key: str, tool: str, soft: bool = False, **args) -> dict:
-        """Run a tool once per (run, key). `soft` records a tool failure as an outcome
-        the agent can react to instead of aborting the run."""
-        cached = self.store.get_step(self.run_id, key)
-        self.replaying = cached is not None
-        if cached is not None:
-            self.emit("step_replayed", key, tool=tool)
-            return cached
-        if self.crash_after is not None and self.executed >= self.crash_after:
-            raise SimulatedCrash(key)
-        self.executed += 1
-        self.emit("step_start", key, tool=tool)
-        t0 = time.time()
+                    def resolve(spec: dict) -> dict:
+                        # allowed values often live in a referenced schema, not on the property itself
+                        out = dict(spec)
+                        refs = [spec.get("$ref")] + [s.get("$ref") for s in spec.get("allOf", []) + spec.get("anyOf", [])]
+                        for ref in filter(None, refs):
+                            out.update(schemas.get(ref.rsplit("/", 1)[-1], {}))
+                        return out
+
+                    self._schema = {k: resolve(v) for k, v in schemas.get("Input", {}).get("properties", {}).items()}
+            except httpx.TransportError:
+                pass  # fall back to prompt-only inputs
+        return self._schema
+
+    def build_inputs(self, req: GenRequest, schema: dict) -> dict:
+        inputs: dict = {"prompt": req.prompt}
+
+        def offer(key: str, value) -> None:
+            spec = schema.get(key)
+            if spec is None:
+                return
+            allowed = spec.get("enum")
+            if allowed and value not in allowed:
+                return
+            inputs[key] = value
+
+        offer("seed", req.seed)
+        offer("aspect_ratio", "16:9")
+        offer("resolution", f"{req.height}p")
+        spec = schema.get("duration")
+        if spec is not None:
+            want = int(-(-req.duration // 1))  # ceil: generate at least as long as the shot, trim later
+            allowed = spec.get("enum")
+            if allowed:
+                longer = [d for d in allowed if d >= want]
+                inputs["duration"] = min(longer) if longer else max(allowed)
+            else:
+                inputs["duration"] = max(spec.get("minimum", want), min(spec.get("maximum", want), want))
+        inputs.update(self.extra_inputs)
+        return inputs
+
+    # generation ---------------------------------------------------------------
+    def generate(self, req: GenRequest, out_path: str) -> None:
+        if not self.token:
+            raise ToolFailed("REPLICATE_API_TOKEN is not set")
         try:
-            out = self.registry.call(
-                tool, args, set(self.state["granted"]), retries=self.cfg.tool_retries,
-                on_retry=lambda n, err: self.emit("tool_retry", key, tool=tool, attempt=n + 1, error=err))
-            out = {"ok": True, **out}
-        except ToolFailed as e:
-            if not soft:
-                self.emit("step_failed", key, tool=tool, error=str(e))
-                raise
-            out = {"ok": False, "error": str(e)}
-        ms = round((time.time() - t0) * 1000, 1)
-        cost = float(out.get("cost_usd", 0.0))
-        self.store.save_step(self.run_id, key, tool, out, cost, ms)
-        self.emit("step_ok" if out["ok"] else "step_failed", key, tool=tool, ms=ms, cost_usd=cost,
-                  **({} if out["ok"] else {"error": out["error"]}))
-        return out
+            with httpx.Client(timeout=60, transport=self.transport, follow_redirects=True,
+                              headers={"Authorization": f"Bearer {self.token}"}) as http:
+                inputs = self.build_inputs(req, self._input_schema(http))
+                url = f"{self.API}/models/{self.model}/predictions"
+                r = http.post(url, json={"input": inputs})
+                if r.status_code == 422:
+                    # The model refused some input values. Drop exactly those fields so the model
+                    # uses its own defaults, and try once more; the clip is trimmed to length later.
+                    try:
+                        refused = {f.get("field", "").split(".", 1)[-1] for f in r.json().get("invalid_fields", [])}
+                    except ValueError:
+                        refused = set()
+                    refused = (refused & inputs.keys()) - {"prompt"}
+                    if refused:
+                        inputs = {k: v for k, v in inputs.items() if k not in refused}
+                        r = http.post(url, json={"input": inputs})
+                pred = self._ok(r)
+                deadline = time.time() + self.timeout_s
+                while pred["status"] not in ("succeeded", "failed", "canceled"):
+                    if time.time() > deadline:
+                        raise TransientError(f"{self.name}: generation timed out")
+                    time.sleep(self.poll_s)
+                    pred = self._ok(http.get(pred["urls"]["get"]))
+                if pred["status"] != "succeeded":
+                    raise TransientError(f"{self.name}: generation {pred['status']}: {pred.get('error')}")
+                output = pred.get("output")
+                url = output[0] if isinstance(output, list) else output
+                if not isinstance(url, str) or not url.startswith("http"):
+                    raise ToolFailed(f"{self.name}: unexpected output {json.dumps(output)[:120]}")
+                os.makedirs(os.path.dirname(out_path), exist_ok=True)
+                # the file host is not Replicate's API: do not send it the API token
+                with httpx.Client(timeout=120, transport=self.transport, follow_redirects=True) as files:
+                    dl = files.get(url)
+                    if dl.status_code != 200:
+                        raise TransientError(f"{self.name}: download HTTP {dl.status_code}")
+                    with open(out_path, "wb") as f:
+                        f.write(dl.content)
+        except httpx.TransportError as e:
+            raise TransientError(f"{self.name}: {e}") from e
+
+    def _ok(self, r: httpx.Response) -> dict:
+        if r.status_code in (408, 429) or r.status_code >= 500:
+            try:
+                wait = float(r.headers.get("retry-after", ""))
+            except ValueError:
+                wait = None
+            if r.status_code == 429 and wait is None:
+                wait = 10.0  # rate limited without a hint: a short pause is the minimum useful wait
+            raise TransientError(f"{self.name}: HTTP {r.status_code}: {r.text[:160]}", retry_after=wait)
+        if r.status_code >= 400:
+            raise ToolFailed(f"{self.name}: HTTP {r.status_code}: {r.text[:200]}")
+        return r.json()
 
 
-class Harness:
-    def __init__(self, home: str = ".cutroom", store: Store | None = None, providers=None, planner=None,
-                 judge=AUTO, backoff_s: float = 0.0):
-        self.home = os.path.abspath(home)
-        os.makedirs(self.home, exist_ok=True)
-        self.store = store or Store(os.path.join(self.home, "cutroom.db"))
-        self.providers = providers or default_providers()
-        self.live = not all(p.simulated for p in self.providers.values())
-        if judge is AUTO:  # the judge needs real footage to look at, and a key to look with
-            judge = VisionJudge() if self.live and os.environ.get("ANTHROPIC_API_KEY") else None
-        self.judge = judge
-        self.planner = planner or default_planner()
-        if self.live and not backoff_s:
-            backoff_s = float(os.environ.get("CUTROOM_BACKOFF_S", "3"))  # real APIs need real pauses
-        self.registry = build_registry(self.providers, self.planner, judge, self.store, self.home, backoff_s)
+DEFAULT_MODELS = "wan-video/wan-2.2-t2v-fast=0.02,wan-video/wan-2.5-t2v-fast=0.06"
 
-    def default_config(self) -> Config:
-        """Settings for whatever this harness is connected to."""
-        if not self.live:
-            return Config(providers=list(self.providers))
-        return Config(
-            name="live", providers=list(self.providers), judge=self.judge is not None, palette_check=False,
-            tool_retries=3,
-            width=848, height=480,
-            budget_usd=float(os.environ.get("CUTROOM_BUDGET_USD", "3")),
-            max_shot_seconds=float(os.environ.get("CUTROOM_MAX_SHOT_SECONDS", "5")),
-            max_total_seconds=float(os.environ.get("CUTROOM_MAX_SECONDS", "15")),
-        )
 
-    # lifecycle --------------------------------------------------------------
-    def create(self, brief: str, config: Config | None = None, auto_approve: bool = False) -> str:
-        cfg = config or self.default_config()
-        granted = DEFAULT_SCOPES + (["deliver:publish"] if auto_approve else [])
-        return self.store.create_run(brief, asdict(cfg), {"granted": granted, "revisions": {}})
+def demo_providers(delay_s: float = 0.0) -> dict[str, Provider]:
+    return {
+        "fastgen": MockProvider("fastgen", price_per_s=0.04, p_error=0.15, p_defect=0.25, delay_s=delay_s),
+        "proline": MockProvider("proline", price_per_s=0.12, p_error=0.03, p_defect=0.04, delay_s=delay_s),
+    }
 
-    def run(self, run_id: str, crash_after: int | None = None) -> dict:
-        """Start or resume a run. Safe to call repeatedly."""
-        run = self.store.get_run(run_id)
-        known = {f.name for f in fields(Config)}
-        cfg, state = Config(**{k: v for k, v in run["config"].items() if k in known}), run["state"]
-        ctx = RunContext(self.store, self.registry, run_id, cfg, state, crash_after)
-        self.store.set_status(run_id, "running")
-        ctx.emit("run_start", config=cfg.name, resumed=bool(self.store.steps(run_id)))
-        status, detail = "completed", ""
-        state.pop("failed_shot", None)
-        try:
-            self._execute(ctx, run["brief"])
-        except PermissionRequired as e:
-            status, detail = "awaiting_approval", e.scope
-            state["pending_scope"] = e.scope
-            ctx.emit("permission_required", tool=e.tool, scope=e.scope)
-        except BudgetExceeded as e:
-            status, detail = "budget_exceeded", str(e)
-        except ShotFailed as e:
-            status, detail = "failed", str(e)
-            state["failed_shot"] = e.shot_id
-        except ToolFailed as e:
-            status, detail = "failed", str(e)
-        except SimulatedCrash as e:
-            status, detail = "interrupted", f"process died before step '{e}'"
-        except Exception as e:  # a bug must not leave the run looking alive
-            status, detail = "failed", f"internal error: {type(e).__name__}: {e}"
-        self.store.save_state(run_id, state)
-        self.store.set_status(run_id, status)
-        ctx.emit("run_end", status=status, detail=detail, cost_usd=self.store.total_cost(run_id))
-        return self.store.get_run(run_id)
 
-    def approve(self, run_id: str, scope: str | None = None) -> dict:
-        state = self.store.get_run(run_id)["state"]
-        scope = scope or state.pop("pending_scope", None)
-        if scope and scope not in state["granted"]:
-            state["granted"].append(scope)
-            self.store.emit(run_id, "permission_granted", "", {"scope": scope})
-        state.pop("pending_scope", None)
-        self.store.save_state(run_id, state)
-        return self.run(run_id)
+def default_providers() -> dict[str, Provider]:
+    """Real models when REPLICATE_API_TOKEN is set, otherwise the simulated pair.
 
-    def request_change(self, run_id: str, shot_id: str, note: str = "", remember: bool = False,
-                       revoke_publish: bool = True) -> None:
-        """Record a creator's change to one shot without running. Bumps that shot's
-        revision so it gets new step keys, and withdraws publish approval: a changed
-        cut has to be approved again."""
-        run = self.store.get_run(run_id)
-        state = run["state"]
-        rev = state["revisions"].setdefault(shot_id, {"rev": 0, "notes": []})
-        rev["rev"] += 1
-        if note:
-            rev["notes"].append(note)
-            self.store.add_feedback(run_id, shot_id, note)
-            if remember:
-                self.store.add_preference(run["config"]["project"], note)
-        if revoke_publish:
-            state["granted"] = [s for s in state["granted"] if s != "deliver:publish"]
-        self.store.save_state(run_id, state)
-        self.store.emit(run_id, "feedback", shot_id, {"note": note, "remember": remember})
-
-    def feedback(self, run_id: str, shot_id: str, note: str, remember: bool = False) -> dict:
-        """Request a change and run it straight away, keeping any approval already given."""
-        self.request_change(run_id, shot_id, note, remember, revoke_publish=False)
-        return self.run(run_id)
-
-    def raise_budget(self, run_id: str, budget_usd: float) -> dict:
-        cfg = self.store.get_run(run_id)["config"]
-        cfg["budget_usd"] = budget_usd
-        self.store.save_config(run_id, cfg)
-        return self.run(run_id)
-
-    # the workflow -------------------------------------------------------------
-    def _execute(self, ctx: RunContext, brief: str) -> None:
-        cfg = ctx.cfg
-        run_dir = os.path.join(self.home, "runs", ctx.run_id)
-        plan = ctx.step("plan", "plan_video", brief=brief, preferences=self.store.preferences(cfg.project),
-                        max_shot_seconds=cfg.max_shot_seconds, max_total_seconds=cfg.max_total_seconds,
-                        target_seconds=cfg.target_seconds)
-        if not plan["shots"]:
-            raise ShotFailed("the plan has no shots")
-        route = ctx.step("route", "choose_models", providers=cfg.providers)
-        assets = ctx.step("assets", "select_assets", mood=plan["style"]["mood"])
-        noise_key = hashlib.sha256(brief.encode()).hexdigest()[:12]
-        clips: list[str] = []
-        for shot in plan["shots"]:
-            reference = clips[0] if clips else None  # later shots are judged against the first accepted one
-            clips.append(self._produce_shot(ctx, plan, route, shot, run_dir, noise_key, reference))
-        # the cut is identified by which clips are in it, so a changed shot means a new assemble step
-        cut = hashlib.sha256("|".join(os.path.basename(c) for c in clips).encode()).hexdigest()[:8]
-        final = ctx.step(f"assemble:{cut}", "assemble", clips=clips, audio=assets["audio"],
-                         out_path=os.path.join(run_dir, f"final_{cut}.mp4"))
-        if cfg.evals:
-            check = ctx.step(f"final_eval:{cut}", "evaluate_final", path=final["path"],
-                             expected_duration=sum(s["duration"] for s in plan["shots"]),
-                             width=cfg.width, height=cfg.height, expect_audio=bool(assets["audio"]))
-            if not check["passed"]:
-                raise ShotFailed(f"final cut failed checks: {check['failures']}")
-        ctx.step(f"deliver:{cut}", "deliver", path=final["path"], run_id=ctx.run_id, title=plan["title"])
-
-    def _produce_shot(self, ctx: RunContext, plan: dict, route: dict, shot: dict, run_dir: str,
-                      noise_key: str, reference: str | None) -> str:
-        cfg = ctx.cfg
-        revision = ctx.state["revisions"].get(shot["id"], {"rev": 0, "notes": []})
-        rev, attempt, hints = revision["rev"], 0, []
-        style = plan["style"]
-        context = [shot["description"].rstrip(".") + ".", f"Subject: {plan.get('subject', '')}.",
-                   f"Look: {style.get('look', style['mood'])}."]
-        for provider in route["order"]:
-            guards = route["guards"].get(provider, [])  # what this model keeps getting wrong
-            for _ in range(cfg.attempts_per_provider):
-                tag = f"{shot['id']}:r{rev}:a{attempt}"
-                if self.store.get_step(ctx.run_id, f"gen:{tag}") is None:  # only new work counts against budget
-                    estimate = self.providers[provider].price_per_s * shot["duration"]
-                    spent = self.store.total_cost(ctx.run_id)
-                    if spent + estimate > cfg.budget_usd + 1e-9:
-                        raise BudgetExceeded(f"${spent:.2f} spent, next clip ~${estimate:.2f}, "
-                                             f"budget ${cfg.budget_usd:.2f}")
-                extras = list(dict.fromkeys([*plan.get("preferences", []), *revision["notes"], *guards, *hints]))
-                gen = ctx.step(f"gen:{tag}", "generate_clip", soft=True, provider=provider,
-                               prompt=" ".join(context + extras), duration=shot["duration"],
-                               width=cfg.width, height=cfg.height, palette=style["palette"],
-                               seed=rev * 100 + attempt, shot_id=shot["id"], noise_key=noise_key,
-                               out_path=os.path.join(run_dir, "clips", f"{shot['id']}_r{rev}_a{attempt}.mp4"))
-                attempt += 1
-                if not gen["ok"]:
-                    ctx.decide(f"gen:{tag}", action="leave_provider", provider=provider,
-                               reason="provider kept erroring after retries")
-                    break
-                if not cfg.evals:
-                    return gen["path"]
-                ev = ctx.step(f"eval:{tag}", "evaluate_clip", path=gen["path"], provider=provider,
-                              duration=shot["duration"], width=cfg.width, height=cfg.height,
-                              palette=style["palette"] if cfg.palette_check else None,
-                              palette_tolerance=cfg.palette_tolerance, judge=cfg.judge,
-                              shot=shot["description"], subject=plan.get("subject", ""),
-                              look=style.get("look", ""), reference_path=reference)
-                if ev["passed"]:
-                    return gen["path"]
-                hints = ev.get("hints", [])
-                ctx.decide(f"eval:{tag}", action="regenerate", provider=provider,
-                           reason=f"failed {ev['failures']}", hints=hints)
-        raise ShotFailed(f"shot {shot['id']}: no acceptable clip after {attempt} attempts "
-                         f"across {route['order']}", shot["id"])
+    CUTROOM_VIDEO_MODELS is a comma-separated list of owner/name=price_per_second, in
+    order of preference. The price is your estimate from the model's page and is what
+    budgets are counted against.
+    """
+    if not os.environ.get("REPLICATE_API_TOKEN"):
+        return demo_providers(float(os.environ.get("CUTROOM_DEMO_DELAY", "0")))
+    providers: dict[str, Provider] = {}
+    for item in os.environ.get("CUTROOM_VIDEO_MODELS", DEFAULT_MODELS).split(","):
+        model, _, price = item.strip().partition("=")
+        if model:
+            p = ReplicateProvider(model, float(price or 0.05))
+            providers[p.name] = p
+    return providers
