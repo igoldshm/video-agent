@@ -1,4 +1,4 @@
-"""Minimal Anthropic Messages client: one forced tool call in, one validated dict out."""
+"""Minimal Anthropic Messages client: one tool call in, one validated dict out."""
 from __future__ import annotations
 
 import base64
@@ -21,10 +21,13 @@ class Claude:
         """Ask for exactly one call of tool `name` and return its input."""
         if not self.api_key:
             raise ToolFailed("ANTHROPIC_API_KEY is not set")
+        # Some models reject a forced tool choice, so the tool is offered with "auto" and the
+        # instruction to use it is given in words. A reply without the call is retried.
         body = {
-            "model": self.model, "max_tokens": max_tokens, "system": system,
+            "model": self.model, "max_tokens": max(max_tokens, 1500),
+            "system": f"{system}\n\nRespond only by calling the `{name}` tool exactly once. Do not reply in text.",
             "tools": [{"name": name, "description": f"Submit the {name} result.", "input_schema": schema}],
-            "tool_choice": {"type": "tool", "name": name},
+            "tool_choice": {"type": "auto"},
             "messages": [{"role": "user", "content": content}],
         }
         try:
@@ -40,7 +43,7 @@ class Claude:
         for block in r.json().get("content", []):
             if block.get("type") == "tool_use" and block.get("name") == name:
                 return block["input"]
-        raise ToolFailed("llm: response had no tool call")
+        raise TransientError("llm: reply did not call the tool")
 
 
 def image_block(jpeg: bytes) -> dict:
