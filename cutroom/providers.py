@@ -127,8 +127,17 @@ class ReplicateProvider:
                 r = http.get(f"{self.API}/models/{self.model}")
                 if r.status_code == 200:
                     version = r.json().get("latest_version") or {}
-                    self._schema = (version.get("openapi_schema", {}).get("components", {})
-                                    .get("schemas", {}).get("Input", {}).get("properties", {})) or {}
+                    schemas = version.get("openapi_schema", {}).get("components", {}).get("schemas", {})
+
+                    def resolve(spec: dict) -> dict:
+                        # allowed values often live in a referenced schema, not on the property itself
+                        out = dict(spec)
+                        refs = [spec.get("$ref")] + [s.get("$ref") for s in spec.get("allOf", []) + spec.get("anyOf", [])]
+                        for ref in filter(None, refs):
+                            out.update(schemas.get(ref.rsplit("/", 1)[-1], {}))
+                        return out
+
+                    self._schema = {k: resolve(v) for k, v in schemas.get("Input", {}).get("properties", {}).items()}
             except httpx.TransportError:
                 pass  # fall back to prompt-only inputs
         return self._schema
@@ -168,7 +177,20 @@ class ReplicateProvider:
             with httpx.Client(timeout=60, transport=self.transport, follow_redirects=True,
                               headers={"Authorization": f"Bearer {self.token}"}) as http:
                 inputs = self.build_inputs(req, self._input_schema(http))
-                pred = self._ok(http.post(f"{self.API}/models/{self.model}/predictions", json={"input": inputs}))
+                url = f"{self.API}/models/{self.model}/predictions"
+                r = http.post(url, json={"input": inputs})
+                if r.status_code == 422:
+                    # The model refused some input values. Drop exactly those fields so the model
+                    # uses its own defaults, and try once more; the clip is trimmed to length later.
+                    try:
+                        refused = {f.get("field", "").split(".", 1)[-1] for f in r.json().get("invalid_fields", [])}
+                    except ValueError:
+                        refused = set()
+                    refused = (refused & inputs.keys()) - {"prompt"}
+                    if refused:
+                        inputs = {k: v for k, v in inputs.items() if k not in refused}
+                        r = http.post(url, json={"input": inputs})
+                pred = self._ok(r)
                 deadline = time.time() + self.timeout_s
                 while pred["status"] not in ("succeeded", "failed", "canceled"):
                     if time.time() > deadline:
