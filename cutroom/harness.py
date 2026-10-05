@@ -124,6 +124,8 @@ class Harness:
             judge = VisionJudge() if self.live and os.environ.get("ANTHROPIC_API_KEY") else None
         self.judge = judge
         self.planner = planner or default_planner()
+        if self.live and not backoff_s:
+            backoff_s = float(os.environ.get("CUTROOM_BACKOFF_S", "3"))  # real APIs need real pauses
         self.registry = build_registry(self.providers, self.planner, judge, self.store, self.home, backoff_s)
 
     def default_config(self) -> Config:
@@ -132,6 +134,7 @@ class Harness:
             return Config(providers=list(self.providers))
         return Config(
             name="live", providers=list(self.providers), judge=self.judge is not None, palette_check=False,
+            tool_retries=3,
             width=848, height=480,
             budget_usd=float(os.environ.get("CUTROOM_BUDGET_USD", "3")),
             max_shot_seconds=float(os.environ.get("CUTROOM_MAX_SHOT_SECONDS", "5")),
