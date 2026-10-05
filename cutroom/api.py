@@ -117,6 +117,10 @@ def creator_view(h: Harness, run: dict) -> dict:
         earlier = next((p for r in range(revision["rev"] - 1, -1, -1) if (p := accepted(shot["id"], r))), None)
         takes = sum(k.startswith(f"gen:{shot['id']}:r{revision['rev']}:a") for k in steps)
         working = bool(in_flight and in_flight[0].split(":")[1:2] == [shot["id"]])
+        kept = run["state"].get("fallbacks", {}).get(shot["id"])
+        flag = None
+        if not current and not working and kept and kept["rev"] == revision["rev"] and status != "making":
+            current, flag = kept["path"], kept["kind"]  # no take passed review; see Harness._fall_back
         if current:
             state = "ready"
         elif working:
@@ -129,6 +133,7 @@ def creator_view(h: Harness, run: dict) -> dict:
             state = "queued"
         view["shots"].append({"id": shot["id"], "number": n, "beat": shot["beat"], "description": shot["description"],
                               "seconds": shot["duration"], "state": state, "notes": revision["notes"],
+                              "flag": flag,
                               "clip_url": url(current or earlier) if (current or earlier) else None})
     ready = sum(s["state"] == "ready" for s in view["shots"])
     view["progress"] = round(ready / total, 2)
