@@ -41,6 +41,7 @@ class Config:
     max_shot_seconds: float = 6.0
     max_total_seconds: float = 30.0
     target_seconds: float = 0        # 0 = let the planner decide
+    best_effort: bool = False        # if no take passes review, keep the closest one and flag it
     project: str = "default"
 
 
@@ -134,7 +135,7 @@ class Harness:
             return Config(providers=list(self.providers))
         return Config(
             name="live", providers=list(self.providers), judge=self.judge is not None, palette_check=False,
-            tool_retries=3,
+            tool_retries=3, best_effort=True,
             width=848, height=480,
             budget_usd=float(os.environ.get("CUTROOM_BUDGET_USD", "3")),
             max_shot_seconds=float(os.environ.get("CUTROOM_MAX_SHOT_SECONDS", "5")),
@@ -252,6 +253,7 @@ class Harness:
         cfg = ctx.cfg
         revision = ctx.state["revisions"].get(shot["id"], {"rev": 0, "notes": []})
         rev, attempt, hints = revision["rev"], 0, []
+        candidates: list[tuple[int, str]] = []  # (judge score, path) of takes that play but were rejected
         style = plan["style"]
         context = [shot["description"].rstrip(".") + ".", f"Subject: {plan.get('subject', '')}.",
                    f"Look: {style.get('look', style['mood'])}."]
@@ -286,8 +288,41 @@ class Harness:
                               look=style.get("look", ""), reference_path=reference)
                 if ev["passed"]:
                     return gen["path"]
+                if ev.get("judge"):
+                    candidates.append((sum(ev["judge"]["scores"].values()), gen["path"]))
                 hints = ev.get("hints", [])
                 ctx.decide(f"eval:{tag}", action="regenerate", provider=provider,
                            reason=f"failed {ev['failures']}", hints=hints)
+        # Nothing passed. Degrade instead of throwing the creator's video away:
+        # a failed change keeps the take it was meant to replace; otherwise the closest take is
+        # kept and flagged. Either way the creator sees it and decides.
+        previous = self._previous_clip(ctx, shot["id"], rev)
+        if previous:
+            return self._fall_back(ctx, shot["id"], rev, "kept_previous", previous)
+        if cfg.best_effort and candidates:
+            return self._fall_back(ctx, shot["id"], rev, "best_effort", max(candidates)[1])
         raise ShotFailed(f"shot {shot['id']}: no acceptable clip after {attempt} attempts "
                          f"across {route['order']}", shot["id"])
+
+    def _previous_clip(self, ctx: RunContext, shot_id: str, rev: int) -> str | None:
+        """The clip this shot used before the current revision, if it had one."""
+        steps = {s["key"]: s["output"] for s in self.store.steps(ctx.run_id)}
+        for r in range(rev - 1, -1, -1):
+            kept = ctx.state.get("fallbacks", {}).get(shot_id)
+            if kept and kept["rev"] == r:
+                return kept["path"]
+            best = None
+            for key, out in steps.items():
+                if key.startswith(f"gen:{shot_id}:r{r}:a") and out["ok"]:
+                    ev = steps.get("eval:" + key[4:])
+                    if not ctx.cfg.evals or (ev and ev.get("passed")):
+                        best = out["path"]
+            if best:
+                return best
+        return None
+
+    def _fall_back(self, ctx: RunContext, shot_id: str, rev: int, kind: str, path: str) -> str:
+        ctx.state.setdefault("fallbacks", {})[shot_id] = {"rev": rev, "kind": kind, "path": path}
+        ctx.decide(f"shot:{shot_id}:r{rev}", action=kind, clip=os.path.basename(path),
+                   reason="no take passed review")
+        return path
