@@ -61,10 +61,14 @@ def render(store: Store, run_id: str) -> str:
             elif ev is None:
                 verdict = '<span class="mute">not evaluated</span>'
             elif ev["passed"]:
-                verdict = '<span class="ok">passed</span>'
+                scores = (ev.get("judge") or {}).get("scores")
+                verdict = '<span class="ok">passed</span>' + (f" {_e(scores)}" if scores else "")
             else:
                 bad = [f'{c["name"]} = {c["value"]} (want {c["threshold"]})' for c in ev["checks"]
                        if not c["passed"]]
+                judge = ev.get("judge")
+                if judge:  # the reviewer's tags, scores and one-line reason
+                    bad.append(f'judge: {", ".join(judge["issues"])} {judge["scores"]} "{judge["note"]}"')
                 verdict = f'<span class="bad">rejected</span> {_e("; ".join(bad))}'
             provider = g["output"].get("provider", "")
             shot_rows.append(f"<tr><td class=k>{_e(shot['id'])} {_e(shot['beat'])}</td><td><code>{_e(tag)}</code>"
