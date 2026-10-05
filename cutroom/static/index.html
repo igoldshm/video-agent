@@ -82,6 +82,7 @@ video,.blank{width:100%;aspect-ratio:16/9;border-radius:6px;background:var(--sun
 .shot form input{padding:8px 10px;font-size:14px}
 .shot form button{padding:8px 12px;font-size:14px}
 .note{font-size:13px;color:var(--mute)} .note::before{content:"You asked: "}
+.flag{font-size:13px;color:var(--warn)}
 .check{font-size:13px;color:var(--mute);display:flex;gap:6px;align-items:center}
 .link{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
 .link input{flex:1 1 220px;font-size:14px;padding:9px 12px}
@@ -162,6 +163,8 @@ function show(id){
   $("nav-home").hidden = id !== "video";
   if (id !== "video"){ clearTimeout(timer); lastView = ""; }
 }
+const FLAG = {kept_previous: "We couldn't make this change work, so the earlier take was kept. You can try wording it differently.",
+              best_effort: "None of the takes fully passed our checks. This is the closest one. Ask for a change if it isn't right."};
 const LABEL = {making:"Making", ready:"Ready to publish", published:"Published", failed:"Needs another try", paused:"Paused",
                filming:"Filming", retaking:"Retaking", queued:"Up next"};
 
@@ -221,6 +224,7 @@ function renderVideo(v){
           <h3><span>${s.number}. ${esc(s.beat)}</span><span class="tag ${s.state}">${s.state === "ready" ? s.seconds + "s" : LABEL[s.state] || ""}</span></h3>
           <p>${esc(s.description)}</p>
           ${s.notes.map(n => `<div class="note">${esc(n)}</div>`).join("")}
+          ${s.flag ? `<div class="flag">${FLAG[s.flag] || ""}</div>` : ""}
           <form data-shot="${s.id}"><input type="text" id="note-${s.id}" maxlength="300" placeholder="Change this shot" aria-label="Change request for shot ${s.number}" ${busy ? "disabled" : ""}>
             <button type="submit" ${busy ? "disabled" : ""}>Send</button></form>
           <label class="check"><input type="checkbox" id="keep-${s.id}" ${busy ? "disabled" : ""}> Also use this note for my next videos</label>
