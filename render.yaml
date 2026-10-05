@@ -1,0 +1,28 @@
+# Render blueprint: New > Blueprint, pick this repository, fill in the secrets.
+services:
+  - type: web
+    name: cutroom
+    runtime: docker
+    plan: starter            # a persistent disk needs a paid instance type
+    healthCheckPath: /healthz
+    disk:
+      name: cutroom-data
+      mountPath: /data
+      sizeGB: 5
+    envVars:
+      - key: CUTROOM_HOME
+        value: /data
+      - key: CUTROOM_ACCESS_CODE
+        sync: false
+      - key: REPLICATE_API_TOKEN
+        sync: false
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: CUTROOM_VIDEO_MODELS
+        value: wan-video/wan-2.2-t2v-fast=0.02,wan-video/wan-2.5-t2v-fast=0.06
+      - key: CUTROOM_BUDGET_USD
+        value: "3"
+      - key: CUTROOM_DAILY_USD
+        value: "15"
+      - key: CUTROOM_DAILY_VIDEOS
+        value: "20"

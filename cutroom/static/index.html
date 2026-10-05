@@ -1,0 +1,290 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cutroom</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Figtree:wght@400;500;600&family=Syne:wght@600;700&display=swap">
+<style>
+/* Layout: one calm column. The video is the biggest thing on the page; shots sit under it as a contact sheet. */
+:root{
+  --bg:#efeef5; --surface:#fbfbfe; --sunk:#e3e1ee; --ink:#18162b; --mute:#625f7a; --line:#d5d2e3;
+  --accent:#c81e62; --accent-ink:#fff5f9; --ok:#177245; --warn:#8a5a00; --bad:#b3261e;
+  --display:"Syne","Avenir Next","Segoe UI",sans-serif; --body:"Figtree","Segoe UI",system-ui,sans-serif;
+  color-scheme:light;
+}
+@media (prefers-color-scheme: dark){ :root{
+  --bg:#121120; --surface:#1b1a2d; --sunk:#0c0b17; --ink:#eeecf7; --mute:#9d9ab5; --line:#2c2a45;
+  --accent:#ff5c9a; --accent-ink:#22040f; --ok:#5ccf93; --warn:#e5b454; --bad:#ff8f85; color-scheme:dark } }
+*{box-sizing:border-box}
+[hidden]{display:none!important}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.55 var(--body);padding-inline:16px}
+.wrap{max-width:980px;margin:0 auto;padding-block:20px 72px;display:flex;flex-direction:column;gap:32px}
+header{display:flex;justify-content:space-between;align-items:center;gap:12px}
+.mark{font:700 20px/1 var(--display);letter-spacing:-.01em;color:var(--ink);text-decoration:none}
+.mark i{color:var(--accent);font-style:normal}
+h1{font:700 clamp(30px,5vw,46px)/1.05 var(--display);margin:0;letter-spacing:-.02em;text-wrap:balance}
+h2{font:700 20px/1.2 var(--display);margin:0}
+p{margin:0}
+.mute{color:var(--mute)} .small{font-size:14px}
+a{color:inherit}
+.stack{display:flex;flex-direction:column;gap:14px;min-width:0}
+.row{display:flex;flex-wrap:wrap;gap:10px;align-items:center}
+.card{background:var(--surface);border:1px solid var(--line);border-radius:10px}
+textarea,input[type=text],input[type=password]{width:100%;font:16px/1.5 var(--body);color:var(--ink);background:var(--surface);
+  border:1px solid var(--line);border-radius:8px;padding:12px 14px;min-width:0}
+textarea{min-height:104px;resize:vertical}
+button{font:600 15px var(--body);border-radius:999px;border:1px solid var(--line);background:var(--surface);color:var(--ink);
+  padding:10px 18px;cursor:pointer}
+button.primary{background:var(--accent);border-color:var(--accent);color:var(--accent-ink)}
+button.quiet{border-color:transparent;background:none;padding-inline:6px;color:var(--mute)}
+button:disabled{opacity:.45;cursor:not-allowed}
+:is(button,textarea,input,a):focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.seg{display:inline-flex;border:1px solid var(--line);border-radius:999px;overflow:hidden;background:var(--surface)}
+.seg label{padding:8px 14px;cursor:pointer;font-weight:500;font-size:15px}
+.seg input{position:absolute;opacity:0;pointer-events:none}
+.seg input:checked+span{color:var(--accent)}
+.seg label:has(input:checked){background:var(--sunk)}
+.seg label:has(input:focus-visible){outline:2px solid var(--accent);outline-offset:-2px}
+.error{color:var(--bad);font-size:14px;min-height:1.4em}
+.tag{font:600 12px/1 var(--body);padding:5px 9px;border-radius:999px;background:var(--sunk);color:var(--mute);white-space:nowrap}
+.tag.ready,.tag.published{color:var(--ok)} .tag.making,.tag.filming,.tag.retaking{color:var(--accent)}
+.tag.failed{color:var(--bad)} .tag.paused{color:var(--warn)}
+
+/* gate + compose */
+.gate{max-width:420px;margin:12vh auto 0;padding:24px}
+.compose{padding:18px}
+.examples button{font-weight:500;font-size:14px;padding:7px 12px}
+
+/* gallery */
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:14px;align-items:start}
+.tile{padding:10px;text-align:left;border-radius:10px;display:flex;flex-direction:column;gap:8px;width:100%;font-weight:400}
+.tile b{font-weight:600;overflow-wrap:anywhere}
+video,.blank{width:100%;aspect-ratio:16/9;border-radius:6px;background:var(--sunk);display:block;object-fit:cover}
+.blank{display:grid;place-items:center;color:var(--mute);font-size:14px}
+
+/* video page */
+.stage{padding:12px}
+.stage video{border-radius:8px;background:#000}
+.progress{aspect-ratio:16/9;border-radius:8px;background:var(--sunk);display:flex;flex-direction:column;justify-content:center;
+  align-items:center;gap:16px;padding:20px;text-align:center}
+.progress b{font:700 clamp(20px,3.4vw,30px)/1.15 var(--display)}
+.bar{width:min(320px,80%);height:6px;border-radius:3px;background:var(--line);overflow:hidden}
+.bar i{display:block;height:100%;background:var(--accent);transition:width .6s}
+.pulse{width:10px;height:10px;border-radius:50%;background:var(--accent);animation:pulse 1.2s ease-in-out infinite}
+@keyframes pulse{50%{opacity:.25;transform:scale(.7)}}
+@media (prefers-reduced-motion:reduce){ .pulse{animation:none} .bar i{transition:none} }
+.shot{padding:10px;display:flex;flex-direction:column;gap:8px;min-width:0}
+.shot h3{font:600 15px/1.3 var(--body);margin:0;display:flex;justify-content:space-between;gap:8px;align-items:center}
+.shot p{font-size:14px;color:var(--mute);overflow-wrap:anywhere}
+.shot form{display:flex;gap:6px}
+.shot form input{padding:8px 10px;font-size:14px}
+.shot form button{padding:8px 12px;font-size:14px}
+.note{font-size:13px;color:var(--mute)} .note::before{content:"You asked: "}
+.check{font-size:13px;color:var(--mute);display:flex;gap:6px;align-items:center}
+.link{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.link input{flex:1 1 220px;font-size:14px;padding:9px 12px}
+.chips{display:flex;flex-wrap:wrap;gap:8px}
+.chip{display:inline-flex;gap:4px;align-items:center;background:var(--sunk);border-radius:999px;padding:4px 4px 4px 12px;font-size:14px}
+.chip button{padding:2px 8px;border:0;background:none;color:var(--mute)}
+footer{font-size:13px;color:var(--mute)}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <a class="mark" href="#">Cut<i>room</i></a>
+    <button class="quiet" id="nav-home" hidden>All videos</button>
+  </header>
+
+  <section class="card gate stack" id="gate" hidden>
+    <h2>Enter your access code</h2>
+    <form class="stack" id="gate-form">
+      <input type="password" id="code" autocomplete="off" aria-label="Access code">
+      <div class="error" id="gate-error" role="alert"></div>
+      <button class="primary" type="submit">Continue</button>
+    </form>
+  </section>
+
+  <main class="stack" id="home" hidden style="gap:32px">
+    <div class="stack">
+      <h1>Describe the video you want.</h1>
+      <p class="mute">One or two sentences. Cutroom plans the shots, films each one, checks them and cuts them together.</p>
+    </div>
+    <form class="card compose stack" id="compose">
+      <textarea id="brief" maxlength="600" aria-label="Describe your video" placeholder="A calm morning routine with a ceramic pour-over coffee set, soft window light"></textarea>
+      <div class="row examples" id="examples"></div>
+      <div class="row" style="justify-content:space-between">
+        <div class="row"><span class="mute small">Length</span><div class="seg" id="lengths" role="radiogroup" aria-label="Length"></div></div>
+        <button class="primary" type="submit" id="create">Make the video</button>
+      </div>
+      <div class="error" id="compose-error" role="alert"></div>
+    </form>
+    <section class="stack" id="mine" hidden>
+      <h2>Your videos</h2>
+      <div class="grid" id="gallery"></div>
+    </section>
+    <section class="stack" id="prefs-box" hidden>
+      <h2>Your style notes</h2>
+      <p class="mute small">Applied to every new video. Remove any you no longer want.</p>
+      <div class="chips" id="prefs"></div>
+    </section>
+  </main>
+
+  <main class="stack" id="video" hidden style="gap:24px"></main>
+
+  <footer id="foot"></footer>
+</div>
+
+<script>
+"use strict";
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const store = {
+  get(k, d){ try { const v = localStorage.getItem(k); return v === null ? d : JSON.parse(v); } catch { return d; } },
+  set(k, v){ try { localStorage.setItem(k, JSON.stringify(v)); } catch {} },
+};
+let code = store.get("cutroom.code", ""), ids = store.get("cutroom.ids", []), config = {max_seconds: 15, live: true};
+let timer = null, lastView = "";
+
+async function api(path, body){
+  const r = await fetch(path, {method: body === undefined ? "GET" : "POST",
+    headers: {"X-Access-Code": code, ...(body === undefined ? {} : {"Content-Type": "application/json"})},
+    body: body === undefined ? undefined : JSON.stringify(body)});
+  if (r.status === 401){ show("gate"); throw new Error("Enter the access code to continue."); }
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(typeof data.detail === "string" ? data.detail : "That didn't work. Check what you entered and try again.");
+  return data;
+}
+function show(id){
+  for (const v of ["gate","home","video"]) $(v).hidden = v !== id;
+  $("nav-home").hidden = id !== "video";
+  if (id !== "video"){ clearTimeout(timer); lastView = ""; }
+}
+const LABEL = {making:"Making", ready:"Ready to publish", published:"Published", failed:"Needs another try", paused:"Paused",
+               filming:"Filming", retaking:"Retaking", queued:"Up next"};
+
+/* ---------- home ---------- */
+async function home(){
+  show("home");
+  const list = ids.length ? await api("/api/videos?ids=" + ids.join(",")) : [];
+  $("mine").hidden = !list.length;
+  $("gallery").innerHTML = list.map(v => {
+    const clip = v.final_url || (v.shots.find(s => s.clip_url) || {}).clip_url;
+    return `<button class="card tile" data-open="${v.id}">
+      ${clip ? `<video muted playsinline preload="metadata" src="${clip}#t=0.5"></video>` : `<div class="blank">${esc(v.stage || "…")}</div>`}
+      <b>${esc(v.title || v.brief)}</b><span class="tag ${v.status}">${LABEL[v.status]}</span></button>`;
+  }).join("");
+  const prefs = await api("/api/preferences");
+  $("prefs-box").hidden = !prefs.length;
+  $("prefs").innerHTML = prefs.map(p => `<span class="chip">${esc(p)}<button data-forget="${esc(p)}" aria-label="Remove note: ${esc(p)}">✕</button></span>`).join("");
+}
+$("gallery").onclick = e => { const b = e.target.closest("[data-open]"); if (b) location.hash = "v/" + b.dataset.open; };
+$("prefs").onclick = async e => { const b = e.target.closest("[data-forget]"); if (b){ await api("/api/preferences/remove", {note: b.dataset.forget}); home(); } };
+$("compose").onsubmit = async e => {
+  e.preventDefault();
+  const brief = $("brief").value.trim(), err = $("compose-error");
+  if (brief.length < 8){ err.textContent = "Add a little more detail about what the video should show."; $("brief").focus(); return; }
+  err.textContent = ""; $("create").disabled = true;
+  try {
+    const seconds = +document.querySelector("#lengths input:checked").value;
+    const v = await api("/api/videos", {brief, seconds});
+    ids = [v.id, ...ids].slice(0, 30); store.set("cutroom.ids", ids);
+    $("brief").value = ""; location.hash = "v/" + v.id;
+  } catch (x){ err.textContent = x.message; }
+  $("create").disabled = false;
+};
+
+/* ---------- one video ---------- */
+function renderVideo(v){
+  const busy = v.status === "making";
+  const stage = v.final_url
+    ? `<video controls playsinline src="${v.final_url}"></video>`
+    : `<div class="progress">${busy ? '<span class="pulse"></span>' : ""}<b>${esc(busy ? v.stage : v.message || "")}</b>
+        ${busy ? `<div class="bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Math.round(v.progress*100)}"><i style="width:${Math.max(4, v.progress*100)}%"></i></div>` : ""}</div>`;
+  let actions = "";
+  if (v.status === "ready") actions = `<button class="primary" data-act="publish">Publish</button><span class="mute small">Happy with it? Publishing gives you a link to share. You can still change any shot first.</span>`;
+  if (v.status === "published") actions = `<div class="link" style="flex:1"><span class="tag published">Published</span>
+      <input type="text" id="watch" readonly value="${location.origin + v.watch_url}" aria-label="Link to your video"><button data-act="copy">Copy link</button></div>`;
+  if (v.status === "failed") actions = `<button class="primary" data-act="retry">Try again</button>`;
+  $("video").innerHTML = `
+    <div class="stack" style="gap:6px"><div class="row"><span class="tag ${v.status}">${LABEL[v.status]}</span></div>
+      <h1>${esc(v.title || "Your video")}</h1><p class="mute">${esc(v.brief)}</p></div>
+    <div class="card stage">${stage}</div>
+    <div class="row" id="actions">${actions}</div><div class="error" id="video-error" role="alert"></div>
+    ${v.shots.length ? `<section class="stack"><h2>Shots</h2>
+      <p class="mute small">Not right? Tell us what to change in a shot. Only that shot is filmed again.</p>
+      <div class="grid">${v.shots.map(s => `
+        <div class="card shot">
+          ${s.clip_url ? `<video muted loop playsinline preload="metadata" src="${s.clip_url}#t=0.3" data-hover></video>` : `<div class="blank">${LABEL[s.state] || ""}</div>`}
+          <h3><span>${s.number}. ${esc(s.beat)}</span><span class="tag ${s.state}">${s.state === "ready" ? s.seconds + "s" : LABEL[s.state] || ""}</span></h3>
+          <p>${esc(s.description)}</p>
+          ${s.notes.map(n => `<div class="note">${esc(n)}</div>`).join("")}
+          <form data-shot="${s.id}"><input type="text" id="note-${s.id}" maxlength="300" placeholder="Change this shot" aria-label="Change request for shot ${s.number}" ${busy ? "disabled" : ""}>
+            <button type="submit" ${busy ? "disabled" : ""}>Send</button></form>
+          <label class="check"><input type="checkbox" id="keep-${s.id}" ${busy ? "disabled" : ""}> Also use this note for my next videos</label>
+        </div>`).join("")}</div></section>` : ""}`;
+}
+async function openVideo(id){
+  show("video");
+  try {
+    const v = await api("/api/videos/" + id), sig = JSON.stringify(v);
+    if (sig !== lastView){ lastView = sig; renderVideo(v); }   // only redraw when something changed
+    clearTimeout(timer);
+    if (v.status === "making") timer = setTimeout(() => route(), 1500);
+  } catch (x){ $("video").innerHTML = `<div class="card stage"><div class="progress"><b>${esc(x.message)}</b></div></div>`; }
+}
+const current = () => location.hash.slice(3);
+async function act(fn){
+  try { lastView = ""; await fn(); await openVideo(current()); }
+  catch (x){ const e = $("video-error"); if (e) e.textContent = x.message; }
+}
+$("video").addEventListener("click", e => {
+  const a = e.target.closest("[data-act]"); if (!a) return;
+  if (a.dataset.act === "publish") act(() => api(`/api/videos/${current()}/publish`, {}));
+  if (a.dataset.act === "retry") act(() => api(`/api/videos/${current()}/retry`, {}));
+  if (a.dataset.act === "copy"){
+    const input = $("watch");
+    navigator.clipboard.writeText(input.value).then(() => { a.textContent = "Copied"; }).catch(() => input.select());
+  }
+});
+$("video").addEventListener("submit", e => {
+  e.preventDefault();
+  const shot = e.target.dataset.shot, note = $("note-" + shot).value.trim();
+  if (note.length < 2){ $("note-" + shot).focus(); return; }
+  act(() => api(`/api/videos/${current()}/shots/${shot}/change`, {note, remember: $("keep-" + shot).checked}));
+});
+for (const ev of ["mouseover","focusin"]) $("video").addEventListener(ev, e => { if (e.target.matches("video[data-hover]")) e.target.play().catch(() => {}); });
+for (const ev of ["mouseout","focusout"]) $("video").addEventListener(ev, e => { if (e.target.matches("video[data-hover]")) e.target.pause(); });
+
+/* ---------- boot ---------- */
+function route(){
+  const h = location.hash;
+  (h.startsWith("#v/") ? openVideo(h.slice(3)) : home()).catch(() => {});
+}
+$("nav-home").onclick = () => { location.hash = ""; };
+window.addEventListener("hashchange", () => { lastView = ""; route(); });
+$("gate-form").onsubmit = async e => {
+  e.preventDefault(); code = $("code").value.trim();
+  try { await api("/api/session", {}); store.set("cutroom.code", code); $("gate-error").textContent = ""; route(); }
+  catch { $("gate-error").textContent = "That code isn't right. Check it and try again."; }
+};
+const EXAMPLES = ["A golden retriever puppy discovering snow for the first time, warm morning light",
+                  "A handmade ceramic mug being glazed and fired in a small studio",
+                  "A cyclist riding through a misty forest road at dawn"];
+$("examples").innerHTML = EXAMPLES.map(x => `<button type="button">${esc(x)}</button>`).join("");
+$("examples").onclick = e => { if (e.target.tagName === "BUTTON"){ $("brief").value = e.target.textContent; $("brief").focus(); } };
+(async function boot(){
+  try { config = await (await fetch("/api/config")).json(); } catch {}
+  const options = [6, 9, 12, 15, 20, 30].filter(s => s <= config.max_seconds);
+  const pick = options.includes(12) ? 12 : options[options.length - 1];
+  $("lengths").innerHTML = options.map(s => `<label><input type="radio" name="len" value="${s}" ${s === pick ? "checked" : ""}><span>${s}s</span></label>`).join("");
+  $("foot").textContent = config.live ? "" : "Demo mode. No video model is connected, so the clips are placeholders.";
+  if (config.needs_code && !code) return show("gate");
+  if (config.needs_code){ try { await api("/api/session", {}); } catch { return; } }
+  route();
+})();
+</script>
+</body>
+</html>

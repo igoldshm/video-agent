@@ -1,0 +1,6 @@
+.git
+.cutroom
+.env
+tests
+__pycache__
+*.egg-info
