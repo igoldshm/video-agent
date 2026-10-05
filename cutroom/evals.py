@@ -115,7 +115,9 @@ class VisionJudge:
 
     SYSTEM = ("You review single shots of an AI-generated video before they go into the final cut. Judge only "
               "what is visible in the frames. Be strict about the subject being the right one and about visual "
-              "defects, lenient about framing and small stylistic choices.")
+              "defects, lenient about framing and small stylistic choices. Check anatomy explicitly: count the "
+              "arms, legs, hands and heads of every person and animal in each frame; a wrong count is "
+              "bad_anatomy and visual_quality 2 at most.")
     PASS_AT = 3
 
     def __init__(self, llm: Claude | None = None):
