@@ -99,8 +99,11 @@ JUDGE_SCHEMA = {
         "visual_quality": {"type": "integer", "minimum": 1, "maximum": 5,
                            "description": "5 = clean and stable; 1 = severe warping, flicker or melting."},
         "consistent_with_reference": {"type": "integer", "minimum": 1, "maximum": 5,
-                                      "description": "Same subject and look as the reference frame. Use 5 when "
-                                                     "no reference frame was given."},
+                                      "description": "Could this clip belong to the same video as the reference "
+                                                     "frame? A different setting, action or framing is expected "
+                                                     "and is not a problem. Score 1-2 only when the recurring "
+                                                     "subject is clearly a different one or the visual style "
+                                                     "clashes. Use 5 when no reference frame was given."},
         "issues": {"type": "array", "items": {"type": "string", "enum": JUDGE_TAGS}},
         "note": {"type": "string", "description": "One sentence on the most important problem, or 'ok'."},
     },
@@ -124,7 +127,9 @@ class VisionJudge:
                                 "Three frames from the generated clip, in order:"}]
         content += [image_block(f) for f in media.jpeg_frames(path, 3)]
         if reference_path:
-            content.append({"type": "text", "text": "Reference frame from an earlier accepted shot of this video:"})
+            content.append({"type": "text", "text": "Reference frame from an earlier accepted shot of this video. "
+                            "It shows a different moment, so the scene and action will differ; compare only the "
+                            "recurring subject's identity and the overall look:"})
             content.append(image_block(media.jpeg_frames(reference_path, 1)[0]))
         verdict = self.llm.tool_call(self.SYSTEM, content, "submit_review", JUDGE_SCHEMA, max_tokens=400)
         scores = {k: int(verdict[k]) for k in ("matches_shot", "visual_quality", "consistent_with_reference")}
