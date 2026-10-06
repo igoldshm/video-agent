@@ -60,12 +60,13 @@ button:disabled{opacity:.45;cursor:not-allowed}
 /* gate + compose */
 .gate{max-width:420px;margin:12vh auto 0;padding:24px}
 .compose{padding:18px}
-.examples button{font-weight:500;font-size:14px;padding:7px 12px}
+.examples button{font-weight:500;font-size:14px;padding:7px 12px;white-space:normal;text-align:left;border-radius:14px}
 
 /* gallery */
 .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:14px;align-items:start}
-.tile{padding:10px;text-align:left;border-radius:10px;display:flex;flex-direction:column;gap:8px;width:100%;font-weight:400}
-.tile b{font-weight:600;overflow-wrap:anywhere}
+.tile{padding:10px;text-align:left;border-radius:10px;display:flex;flex-direction:column;gap:8px;width:100%;font-weight:400;white-space:normal;min-width:0;align-items:stretch}
+.tile b{font-weight:600;overflow-wrap:anywhere;min-width:0}
+.tile .tag{align-self:flex-start}
 video,.blank{width:100%;aspect-ratio:16/9;border-radius:6px;background:var(--sunk);display:block;object-fit:cover}
 .blank{display:grid;place-items:center;color:var(--mute);font-size:14px}
 
