@@ -24,6 +24,7 @@ from .trace import render
 
 STATIC = os.path.join(os.path.dirname(__file__), "static")
 STAGES = {"plan_video": "Planning your shots", "choose_models": "Setting things up",
+          "create_reference": "Designing your main subject", "approve_reference": "Designing your main subject",
           "select_assets": "Setting things up", "assemble": "Putting the cut together",
           "evaluate_final": "Final check", "deliver": "Publishing"}
 CREATOR_STATUS = {"pending": "making", "running": "making", "awaiting_approval": "ready",
@@ -43,6 +44,10 @@ class Change(BaseModel):
 
 class Note(BaseModel):
     note: str
+
+
+class OptionalNote(BaseModel):
+    note: str = Field(default="", max_length=300)
 
 
 class Jobs:
@@ -80,6 +85,8 @@ def creator_view(h: Harness, run: dict) -> dict:
     run_id, steps = run["id"], {s["key"]: s for s in h.store.steps(run["id"])}
     plan = steps["plan"]["output"] if "plan" in steps else None
     status = CREATOR_STATUS.get(run["status"], "making")
+    if run["status"] == "awaiting_approval" and run["state"].get("pending_scope") == "reference:approve":
+        status = "review_reference"
     in_flight = None
     if status == "making":
         for e in reversed(h.store.events(run_id)):
@@ -90,7 +97,13 @@ def creator_view(h: Harness, run: dict) -> dict:
                 break
     view = {"id": run_id, "status": status, "brief": run["brief"], "title": plan["title"] if plan else None,
             "stage": "Getting started" if status == "making" else None, "shots": [], "progress": 0.0,
-            "final_url": None, "watch_url": f"/v/{run_id}" if status == "published" else None, "message": None}
+            "final_url": None, "watch_url": f"/v/{run_id}" if status == "published" else None, "message": None,
+            "reference": None}
+    ref = steps.get(f"ref:r{run['state'].get('reference_rev', 0)}")
+    if ref and ref["output"].get("ok"):
+        view["reference"] = {"url": f"/media/{run_id}/{os.path.basename(ref['output']['path'])}",
+                             "approved": "reference:approve" in run["state"]["granted"],
+                             "notes": run["state"].get("reference_notes", [])}
     if not plan:
         if status == "failed":
             view["message"] = "We couldn't plan this video. Try again in a moment."
@@ -125,7 +138,8 @@ def creator_view(h: Harness, run: dict) -> dict:
             state = "ready"
         elif working:
             state = "retaking" if (takes > 0 or earlier) else "filming"
-            verb = "Reviewing" if in_flight[1] == "evaluate_clip" else ("Retaking" if state == "retaking" else "Filming")
+            verb = {"evaluate_clip": "Reviewing", "create_keyframe": "Setting up",
+                    "evaluate_keyframe": "Setting up"}.get(in_flight[1], "Retaking" if state == "retaking" else "Filming")
             view["stage"] = f"{verb} shot {n} of {total}"
         elif status == "failed" and run["state"].get("failed_shot") == shot["id"]:
             state = "failed"
@@ -196,13 +210,14 @@ def create_app(harness: Harness | None = None, sync: bool = False) -> FastAPI:
     @app.get("/media/{run_id}/{name}")
     def media_file(run_id: str, name: str):
         # run ids are unguessable; <video> tags cannot send the access header
-        if not re.fullmatch(r"[0-9a-f]{16}", run_id) or not re.fullmatch(r"[A-Za-z0-9_]+\.mp4", name):
+        if not re.fullmatch(r"[0-9a-f]{16}", run_id) or not re.fullmatch(r"[A-Za-z0-9_]+\.(mp4|jpg)", name):
             raise HTTPException(404)
         base = os.path.join(h.home, "runs", run_id)
-        path = os.path.join(base, name if name.startswith("final_") else os.path.join("clips", name))
+        folder = "stills" if name.endswith(".jpg") else "" if name.startswith("final_") else "clips"
+        path = os.path.join(base, folder, name)
         if not os.path.isfile(path):
             raise HTTPException(404)
-        return FileResponse(path, media_type="video/mp4")
+        return FileResponse(path, media_type="image/jpeg" if name.endswith(".jpg") else "video/mp4")
 
     @app.get("/v/{run_id}", response_class=HTMLResponse)
     def watch(run_id: str):
@@ -280,9 +295,29 @@ def create_app(harness: Harness | None = None, sync: bool = False) -> FastAPI:
 
     @app.post("/api/videos/{run_id}/publish", dependencies=[Depends(guard)])
     def publish(run_id: str):
-        if jobs.busy(run_id) or get_run(run_id)["status"] != "awaiting_approval":
+        run = get_run(run_id)
+        if (jobs.busy(run_id) or run["status"] != "awaiting_approval"
+                or run["state"].get("pending_scope") != "deliver:publish"):
             raise HTTPException(409, "This video isn't ready to publish yet.")
         jobs.submit(run_id, h.approve, run_id)
+        return creator_view(h, get_run(run_id))
+
+    @app.post("/api/videos/{run_id}/reference/approve", dependencies=[Depends(guard)])
+    def approve_reference(run_id: str):
+        run = get_run(run_id)
+        if (jobs.busy(run_id) or run["status"] != "awaiting_approval"
+                or run["state"].get("pending_scope") != "reference:approve"):
+            raise HTTPException(409, "There is no look waiting for your approval.")
+        jobs.submit(run_id, h.approve, run_id)
+        return creator_view(h, get_run(run_id))
+
+    @app.post("/api/videos/{run_id}/reference/redo", dependencies=[Depends(guard)])
+    def redo_reference(run_id: str, body: OptionalNote):
+        view = creator_view(h, get_run(run_id))
+        if jobs.busy(run_id) or view["status"] == "making" or not view["reference"]:
+            raise HTTPException(409, "The look can't be changed right now.")
+        h.redo_reference(run_id, body.note.strip())
+        jobs.submit(run_id, h.run, run_id)
         return creator_view(h, get_run(run_id))
 
     @app.get("/api/preferences", dependencies=[Depends(guard)])

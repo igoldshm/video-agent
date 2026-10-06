@@ -78,3 +78,18 @@ def jpeg_frames(path: str, n: int = 3, width: int = 512) -> list[bytes]:
     duration = probe(path)["duration"]
     return [ffmpeg(["-ss", f"{duration * (i + 0.5) / n:.2f}", "-i", path, "-frames:v", "1",
                     "-vf", f"scale={width}:-2", "-f", "image2pipe", "-c:v", "mjpeg", "-"]) for i in range(n)]
+
+
+def to_jpeg(src: str, dst: str, width: int, height: int | None = None) -> None:
+    """Re-encode any still as a JPEG small enough to send inline; with `height`, fit and pad to that frame."""
+    os.makedirs(os.path.dirname(dst), exist_ok=True)
+    vf = (f"scale={width}:{height}:force_original_aspect_ratio=decrease,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2"
+          if height else f"scale={width}:-2")
+    ffmpeg(["-i", src, "-vf", vf, "-frames:v", "1", "-q:v", "3", "-f", "image2", "-c:v", "mjpeg", dst])
+
+
+def still_jpeg(path: str, width: int = 512) -> bytes:
+    """One JPEG for a vision model, from either a still image or the middle of a clip."""
+    if path.lower().endswith((".jpg", ".jpeg", ".png", ".webp")):
+        return ffmpeg(["-i", path, "-frames:v", "1", "-vf", f"scale={width}:-2", "-f", "image2pipe", "-c:v", "mjpeg", "-"])
+    return jpeg_frames(path, 1, width)[0]

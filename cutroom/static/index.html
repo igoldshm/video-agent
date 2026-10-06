@@ -36,7 +36,7 @@ textarea,input[type=text],input[type=password]{width:100%;font:16px/1.5 var(--bo
   border:1px solid var(--line);border-radius:8px;padding:12px 14px;min-width:0}
 textarea{min-height:104px;resize:vertical}
 button{font:600 15px var(--body);border-radius:999px;border:1px solid var(--line);background:var(--surface);color:var(--ink);
-  padding:10px 18px;cursor:pointer}
+  padding:10px 18px;cursor:pointer;white-space:nowrap}
 button.primary{background:var(--accent);border-color:var(--accent);color:var(--accent-ink)}
 button.quiet{border-color:transparent;background:none;padding-inline:6px;color:var(--mute)}
 button:disabled{opacity:.45;cursor:not-allowed}
@@ -49,6 +49,11 @@ button:disabled{opacity:.45;cursor:not-allowed}
 .seg label:has(input:focus-visible){outline:2px solid var(--accent);outline-offset:-2px}
 .error{color:var(--bad);font-size:14px;min-height:1.4em}
 .tag{font:600 12px/1 var(--body);padding:5px 9px;border-radius:999px;background:var(--sunk);color:var(--mute);white-space:nowrap}
+.tag.review_reference{color:var(--warn)}
+.look{display:grid;grid-template-columns:minmax(0,1.2fr) minmax(0,1fr);gap:20px;align-items:start;padding:16px}
+.look img{width:100%;border-radius:8px;display:block;background:var(--sunk)}
+.look form{display:flex;gap:6px}
+@media (max-width:700px){ .look{grid-template-columns:minmax(0,1fr)} }
 .tag.ready,.tag.published{color:var(--ok)} .tag.making,.tag.filming,.tag.retaking{color:var(--accent)}
 .tag.failed{color:var(--bad)} .tag.paused{color:var(--warn)}
 
@@ -165,7 +170,7 @@ function show(id){
 }
 const FLAG = {kept_previous: "We couldn't make this change work, so the earlier take was kept. You can try wording it differently.",
               best_effort: "None of the takes fully passed our checks. This is the closest one. Ask for a change if it isn't right."};
-const LABEL = {making:"Making", ready:"Ready to publish", published:"Published", failed:"Needs another try", paused:"Paused",
+const LABEL = {review_reference:"Check the look", making:"Making", ready:"Ready to publish", published:"Published", failed:"Needs another try", paused:"Paused",
                filming:"Filming", retaking:"Retaking", queued:"Up next"};
 
 /* ---------- home ---------- */
@@ -202,7 +207,16 @@ $("compose").onsubmit = async e => {
 /* ---------- one video ---------- */
 function renderVideo(v){
   const busy = v.status === "making";
-  const stage = v.final_url
+  const look = v.status === "review_reference" && v.reference;
+  const stage = look
+    ? `<div class="look"><img src="${v.reference.url}" alt="Proposed look of the main subject">
+        <div class="stack"><h2>Is this the right look?</h2>
+        <p class="mute">This is how the main subject will appear. Each shot gets its own scene built around it, so approve it only if it's right.</p>
+        ${v.reference.notes.map(n => `<div class="note">${esc(n)}</div>`).join("")}
+        <div class="row"><button class="primary" data-act="look-ok">Looks right, start filming</button></div>
+        <form id="look-form"><input type="text" id="look-note" maxlength="300" placeholder="What should change?" aria-label="What should change about the look">
+          <button type="submit">Try another</button></form></div></div>`
+    : v.final_url
     ? `<video controls playsinline src="${v.final_url}"></video>`
     : `<div class="progress">${busy ? '<span class="pulse"></span>' : ""}<b>${esc(busy ? v.stage : v.message || "")}</b>
         ${busy ? `<div class="bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Math.round(v.progress*100)}"><i style="width:${Math.max(4, v.progress*100)}%"></i></div>` : ""}</div>`;
@@ -214,7 +228,7 @@ function renderVideo(v){
   $("video").innerHTML = `
     <div class="stack" style="gap:6px"><div class="row"><span class="tag ${v.status}">${LABEL[v.status]}</span></div>
       <h1>${esc(v.title || "Your video")}</h1><p class="mute">${esc(v.brief)}</p></div>
-    <div class="card stage">${stage}</div>
+    <div class="card ${look ? "" : "stage"}">${stage}</div>
     <div class="row" id="actions">${actions}</div><div class="error" id="video-error" role="alert"></div>
     ${v.shots.length ? `<section class="stack"><h2>Shots</h2>
       <p class="mute small">Not right? Tell us what to change in a shot. Only that shot is filmed again.</p>
@@ -248,6 +262,7 @@ $("video").addEventListener("click", e => {
   const a = e.target.closest("[data-act]"); if (!a) return;
   if (a.dataset.act === "publish") act(() => api(`/api/videos/${current()}/publish`, {}));
   if (a.dataset.act === "retry") act(() => api(`/api/videos/${current()}/retry`, {}));
+  if (a.dataset.act === "look-ok") act(() => api(`/api/videos/${current()}/reference/approve`, {}));
   if (a.dataset.act === "copy"){
     const input = $("watch");
     navigator.clipboard.writeText(input.value).then(() => { a.textContent = "Copied"; }).catch(() => input.select());
@@ -255,6 +270,8 @@ $("video").addEventListener("click", e => {
 });
 $("video").addEventListener("submit", e => {
   e.preventDefault();
+  if (e.target.id === "look-form")
+    return act(() => api(`/api/videos/${current()}/reference/redo`, {note: $("look-note").value.trim()}));
   const shot = e.target.dataset.shot, note = $("note-" + shot).value.trim();
   if (note.length < 2){ $("note-" + shot).focus(); return; }
   act(() => api(`/api/videos/${current()}/shots/${shot}/change`, {note, remember: $("keep-" + shot).checked}));

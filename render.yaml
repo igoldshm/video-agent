@@ -20,6 +20,10 @@ services:
         sync: false
       - key: CUTROOM_VIDEO_MODELS
         value: wan-video/wan-2.2-t2v-fast=0.02,wan-video/wan-2.5-t2v-fast=0.06
+      - key: CUTROOM_IMAGE_MODEL        # optional, turns on the subject reference
+        sync: false
+      - key: CUTROOM_KEYFRAME_MODEL     # optional, gives each shot its own opening frame
+        sync: false
       - key: CUTROOM_BUDGET_USD
         value: "3"
       - key: CUTROOM_DAILY_USD

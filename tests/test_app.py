@@ -85,3 +85,53 @@ def test_unfinished_videos_continue_when_the_service_restarts(tmp_path):
     assert v["status"] == "ready"
     keys = [e["key"] for e in h.store.events(rid) if e["kind"] == "step_ok"]
     assert len(keys) == len(set(keys)) and h.store.total_cost(rid) > paid
+
+
+def test_failed_change_keeps_the_earlier_take_instead_of_losing_the_video(tmp_path):
+    """Seen live: a change request hit provider errors and the finished video became 'failed'."""
+    fast = MockProvider("fastgen", 0.04)
+    client = TestClient(create_app(harness(tmp_path, fastgen=fast), sync=True))
+    v = client.post("/api/videos", json={"brief": BRIEF, "seconds": 9}).json()
+    original = v["shots"][1]["clip_url"]
+    fast.force_defect = "black"  # every new take is now unusable
+    v = client.post(f"/api/videos/{v['id']}/shots/s2/change", json={"note": "Two arms, not three"}).json()
+    assert v["status"] == "ready" and v["final_url"]
+    assert v["shots"][1]["clip_url"] == original and v["shots"][1]["flag"] == "kept_previous"
+    assert v["shots"][0]["flag"] is None
+    fast.force_defect = None  # a later change that works replaces it and clears the flag
+    v = client.post(f"/api/videos/{v['id']}/shots/s2/change", json={"note": "Try once more"}).json()
+    assert v["shots"][1]["flag"] is None and v["shots"][1]["clip_url"].endswith("s2_r2_a0.mp4")
+
+
+def test_look_is_approved_before_filming_and_each_shot_gets_its_own_opening_frame(tmp_path):
+    from cutroom.providers import MockImageModel
+    h = Harness(str(tmp_path / "home"), providers={"fastgen": MockProvider("fastgen", 0.04)},
+                planner=HeuristicPlanner(), judge=None,
+                images={"reference": MockImageModel("ref"), "keyframe": MockImageModel("key")})
+    client = TestClient(create_app(h, sync=True))
+    v = client.post("/api/videos", json={"brief": BRIEF, "seconds": 9}).json()
+    rid = v["id"]
+    assert v["status"] == "review_reference" and v["reference"]["url"].endswith("ref_r0.jpg")
+    assert client.get(v["reference"]["url"]).headers["content-type"] == "image/jpeg"
+    keys = lambda: [s["key"] for s in h.store.steps(rid)]  # noqa: E731
+    assert not any(k.startswith(("gen:", "key:")) for k in keys()), "nothing is filmed before the look is approved"
+    assert client.post(f"/api/videos/{rid}/publish", json={}).status_code == 409
+
+    v = client.post(f"/api/videos/{rid}/reference/redo", json={"note": "Make it taller"}).json()
+    assert v["status"] == "review_reference" and v["reference"]["url"].endswith("ref_r1.jpg")
+    assert v["reference"]["notes"] == ["Make it taller"]
+
+    v = client.post(f"/api/videos/{rid}/reference/approve", json={}).json()
+    assert v["status"] == "ready" and v["reference"]["approved"]
+    steps = {s["key"]: s["output"] for s in h.store.steps(rid)}
+    frames = [steps[f"key:s{i}:r0:k0"]["path"] for i in (1, 2, 3)]
+    assert len(set(frames)) == 3 and not any("ref_" in f for f in frames), "one distinct opening frame per shot"
+    assert client.get(f"/media/{rid}/key_s1_r0_k0.jpg").status_code == 200
+    assert client.post(f"/api/videos/{rid}/reference/approve", json={}).status_code == 409
+    assert h.store.total_cost(rid) == pytest.approx(2 * 0.01 + 3 * 0.01 + 9 * 0.04)  # 2 references, 3 keyframes, 9s
+
+    # changing the look after filming needs approval again and refilms every shot
+    v = client.post(f"/api/videos/{rid}/reference/redo", json={}).json()
+    assert v["status"] == "review_reference"
+    v = client.post(f"/api/videos/{rid}/reference/approve", json={}).json()
+    assert v["status"] == "ready" and all(s["clip_url"].endswith("_r1_a0.mp4") for s in v["shots"])

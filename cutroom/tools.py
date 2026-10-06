@@ -47,7 +47,35 @@ class GenerateIn(BaseModel):
     seed: int = 0
     shot_id: str
     noise_key: str = ""
+    image_path: str | None = None
     out_path: str
+
+
+class ReferenceIn(BaseModel):
+    prompt: str = Field(min_length=3)
+    seed: int = 0
+    out_path: str
+
+
+class ApproveReferenceIn(BaseModel):
+    path: str
+
+
+class KeyframeIn(BaseModel):
+    prompt: str = Field(min_length=3)
+    reference_path: str
+    seed: int = 0
+    width: int = Field(gt=0)
+    height: int = Field(gt=0)
+    out_path: str
+
+
+class EvalKeyframeIn(BaseModel):
+    path: str
+    shot: str
+    subject: str = ""
+    look: str = ""
+    reference_path: str | None = None
 
 
 class EvalClipIn(BaseModel):
@@ -86,8 +114,9 @@ class DeliverIn(BaseModel):
 
 
 def build_registry(providers: dict[str, Provider], planner, judge, store: Store, home: str,
-                   backoff_s: float = 0.0) -> Registry:
+                   backoff_s: float = 0.0, images: dict | None = None) -> Registry:
     reg = Registry(backoff_s=backoff_s)
+    images = images or {}
     simulated = all(p.simulated for p in providers.values())
 
     def plan_video(inp: PlanIn, call: CallInfo) -> dict:
@@ -127,7 +156,7 @@ def build_registry(providers: dict[str, Provider], planner, judge, store: Store,
         provider = providers[inp.provider]
         req = GenRequest(prompt=inp.prompt, duration=inp.duration, width=inp.width, height=inp.height,
                          palette=inp.palette, seed=inp.seed, shot_id=inp.shot_id,
-                         noise_key=inp.noise_key, attempt=call.attempt)
+                         noise_key=inp.noise_key, attempt=call.attempt, image_path=inp.image_path)
         if provider.simulated:
             provider.generate(req, inp.out_path)
         else:
@@ -142,6 +171,40 @@ def build_registry(providers: dict[str, Provider], planner, judge, store: Store,
                     os.remove(raw)
         return {"path": inp.out_path, "provider": provider.name,
                 "cost_usd": round(provider.price_per_s * inp.duration, 4)}
+
+    def _still(role: str, prompt: str, seed: int, reference: str | None, out_path: str,
+               size: tuple[int, int] | None) -> dict:
+        model = images.get(role)
+        if model is None:
+            raise ToolFailed(f"no {role} image model is configured")
+        raw = out_path + ".raw"
+        model.generate(prompt, seed, reference, raw)
+        try:  # one format and a bounded size, whatever the model returned
+            media.to_jpeg(raw, out_path, *(size or (1024,)))
+        except RuntimeError as e:
+            raise ToolFailed(f"{model.name}: returned an image that could not be decoded ({e})") from e
+        finally:
+            if os.path.exists(raw):
+                os.remove(raw)
+        return {"path": out_path, "model": model.name, "cost_usd": round(model.price_per_image, 4)}
+
+    def create_reference(inp: ReferenceIn, call: CallInfo) -> dict:
+        return _still("reference", inp.prompt, inp.seed, None, inp.out_path, None)
+
+    def approve_reference(inp: ApproveReferenceIn, call: CallInfo) -> dict:
+        # Does nothing itself. It exists so that filming cannot start until a person has
+        # granted reference:approve for the image every shot will be built on.
+        return {"path": inp.path}
+
+    def create_keyframe(inp: KeyframeIn, call: CallInfo) -> dict:
+        return _still("keyframe", inp.prompt, inp.seed, inp.reference_path, inp.out_path, (inp.width, inp.height))
+
+    def evaluate_keyframe(inp: EvalKeyframeIn, call: CallInfo) -> dict:
+        if judge is None:
+            return {"passed": True, "failures": [], "hints": [], "judge": None}
+        verdict = judge.judge_image(inp.path, inp.shot, inp.subject, inp.look, inp.reference_path)
+        return {"passed": verdict["passed"], "failures": verdict["issues"], "judge": verdict,
+                "hints": [evals.REVISION_HINTS[f] for f in verdict["issues"] if f in evals.REVISION_HINTS]}
 
     def evaluate_clip(inp: EvalClipIn, call: CallInfo) -> dict:
         res = evals.evaluate_clip(inp.path, inp.duration, inp.width, inp.height, inp.palette, inp.palette_tolerance)
@@ -177,6 +240,14 @@ def build_registry(providers: dict[str, Provider], planner, judge, store: Store,
         ("choose_models", ChooseModelsIn, choose_models, ("plan",),
          "Order the video models and set prompt guards from eval history."),
         ("select_assets", AssetsIn, select_assets, ("assets:read",), "Pick library assets that fit the mood."),
+        ("create_reference", ReferenceIn, create_reference, ("generate",),
+         "Draw the reference image of the recurring subject."),
+        ("approve_reference", ApproveReferenceIn, approve_reference, ("reference:approve",),
+         "Confirm the reference. Needs creator approval."),
+        ("create_keyframe", KeyframeIn, create_keyframe, ("generate",),
+         "Place the referenced subject in one shot's opening frame."),
+        ("evaluate_keyframe", EvalKeyframeIn, evaluate_keyframe, ("evaluate",),
+         "Review a keyframe before paying for video."),
         ("generate_clip", GenerateIn, generate_clip, ("generate",), "Generate one clip with a named model."),
         ("evaluate_clip", EvalClipIn, evaluate_clip, ("evaluate",), "Technical checks, then the vision judge."),
         ("assemble", AssembleIn, assemble, ("media:process",), "Join the chosen clips and lay the audio bed."),

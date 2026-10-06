@@ -26,6 +26,13 @@ brief ─ plan ─ choose models ─ pick assets ─┬─ shot 1: generate ─ 
   `gen:s2:r1:a0` (shot 2, revision 1, attempt 0). Resuming a video replays what is
   recorded and only runs, and only pays for, what is new. A restarted service picks up
   unfinished videos by itself.
+- **Consistent subjects (optional).** With an image model configured, the agent first
+  draws a reference image of the recurring subject and stops until the creator approves
+  it (`reference:approve`). Each shot then gets its own opening frame, made by an
+  image-editing model from that reference, and the clip is generated from that frame
+  with an image-to-video model. The opening frame is reviewed before any video is
+  generated from it, because a still costs a fraction of a clip. No shot is filmed from
+  the reference itself.
 - **Evals.** Two layers. Technical checks measure the file: decodable, right length,
   no black frames, has motion. Then a vision model looks at three frames, plus a
   reference frame from the first accepted shot, and scores whether the clip shows the
@@ -64,6 +71,8 @@ To use real models, copy `.env.example` to `.env`, fill it in and export it:
 | `REPLICATE_API_TOKEN` | Turns on real video generation through Replicate |
 | `ANTHROPIC_API_KEY` | Turns on the LLM planner and the vision judge |
 | `CUTROOM_VIDEO_MODELS` | `owner/name=price_per_second,...` in order of preference |
+| `CUTROOM_IMAGE_MODEL` | Optional `owner/name=price_per_image`. Turns on the subject reference and its approval step |
+| `CUTROOM_KEYFRAME_MODEL` | Optional `owner/name=price_per_image`. An image-editing model that takes a reference image; gives each shot its own opening frame |
 | `CUTROOM_ACCESS_CODE` | Required to make videos. Set it on anything public |
 | `CUTROOM_BUDGET_USD`, `CUTROOM_DAILY_USD`, `CUTROOM_DAILY_VIDEOS` | Spend limits |
 | `CUTROOM_MAX_SECONDS`, `CUTROOM_MAX_SHOT_SECONDS` | Length limits |
@@ -117,10 +126,14 @@ says nothing about any real model.
 
 ## Status
 
-- Tested: 24 tests cover the harness, the creator API and the real-model path. The
+- Tested: 32 tests cover the harness, the creator API and the real-model path. The
   Replicate adapter, the planner and the judge are tested against stubbed HTTP
   responses with real video files.
-- Not yet verified: a run against the live Replicate and Anthropic APIs.
+- Verified live: planning, text-to-video generation, the vision judge, retakes, change
+  requests and publishing.
+- Not yet verified live: the reference and keyframe workflow (image models and image-to-video).
+- If no take of a shot passes review, the closest one is kept and flagged to the creator;
+  a change request that cannot be made keeps the take it was meant to replace.
 - Known limits: one process with a thread pool and SQLite; one shared access code
   instead of accounts; videos are silent unless you add music to `$CUTROOM_HOME/assets/library.json`;
   the judge sees three frames per clip, so it can miss problems between them.

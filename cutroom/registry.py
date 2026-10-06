@@ -11,6 +11,10 @@ from pydantic import BaseModel, ValidationError
 class TransientError(Exception):
     """Worth retrying: timeouts, 429s, 5xx from a provider."""
 
+    def __init__(self, message: str, retry_after: float | None = None):
+        super().__init__(message)
+        self.retry_after = retry_after  # seconds the provider asked us to wait, if it said
+
 
 class ToolFailed(Exception):
     """A tool gave up after its retries, or failed in a non-retryable way."""
@@ -40,6 +44,7 @@ class Tool:
 class Registry:
     tools: dict[str, Tool] = field(default_factory=dict)
     backoff_s: float = 0.0  # base for exponential backoff; 0 keeps tests and mocks fast
+    max_wait_s: float = 60.0
 
     def register(self, tool: Tool) -> None:
         self.tools[tool.name] = tool
@@ -69,5 +74,6 @@ class Registry:
                     raise ToolFailed(f"{e} (gave up after {attempt + 1} tries)") from e
                 if on_retry:
                     on_retry(attempt, str(e))
-                time.sleep(self.backoff_s * 2 ** attempt)
+                # wait at least as long as the provider asked; hammering a rate limit only extends it
+                time.sleep(min(self.max_wait_s, max(self.backoff_s * 2 ** attempt, e.retry_after or 0)))
         raise AssertionError("unreachable")

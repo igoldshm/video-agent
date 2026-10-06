@@ -127,12 +127,23 @@ class VisionJudge:
         content: list[dict] = [{"type": "text", "text":
                                 f"Shot wanted: {shot}\nRecurring subject: {subject}\nLook: {look}\n\n"
                                 "Three frames from the generated clip, in order:"}]
-        content += [image_block(f) for f in media.jpeg_frames(path, 3)]
+        return self._review(content, [image_block(f) for f in media.jpeg_frames(path, 3)], reference_path)
+
+    def judge_image(self, path: str, shot: str, subject: str, look: str, reference_path: str | None = None) -> dict:
+        """Review a keyframe before any video is generated from it: a bad start frame is
+        far cheaper to catch here than after paying for the clip."""
+        content: list[dict] = [{"type": "text", "text":
+                                f"Shot wanted: {shot}\nRecurring subject: {subject}\nLook: {look}\n\n"
+                                "The still image this shot will start from:"}]
+        return self._review(content, [image_block(media.still_jpeg(path))], reference_path)
+
+    def _review(self, content: list[dict], images: list[dict], reference_path: str | None) -> dict:
+        content += images
         if reference_path:
-            content.append({"type": "text", "text": "Reference frame from an earlier accepted shot of this video. "
-                            "It shows a different moment, so the scene and action will differ; compare only the "
-                            "recurring subject's identity and the overall look:"})
-            content.append(image_block(media.jpeg_frames(reference_path, 1)[0]))
+            content.append({"type": "text", "text": "Reference image of the recurring subject for this video. "
+                            "The scene and action will differ from it; compare only the subject's identity "
+                            "and the overall look:"})
+            content.append(image_block(media.still_jpeg(reference_path)))
         verdict = self.llm.tool_call(self.SYSTEM, content, "submit_review", JUDGE_SCHEMA, max_tokens=400)
         scores = {k: int(verdict[k]) for k in ("matches_shot", "visual_quality", "consistent_with_reference")}
         issues = [t for t in verdict.get("issues", []) if t in JUDGE_TAGS]

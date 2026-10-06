@@ -16,7 +16,7 @@ from dataclasses import asdict, dataclass, field, fields
 
 from .evals import VisionJudge
 from .planner import default_planner
-from .providers import default_providers
+from .providers import default_image_models, default_providers
 from .registry import PermissionRequired, Registry, ToolFailed
 from .store import Store
 from .tools import build_registry
@@ -42,6 +42,9 @@ class Config:
     max_total_seconds: float = 30.0
     target_seconds: float = 0        # 0 = let the planner decide
     best_effort: bool = False        # if no take passes review, keep the closest one and flag it
+    reference_mode: bool = False     # draw a subject reference and get it approved; shots are judged against it
+    keyframes: bool = False          # give each shot its own opening frame, made from the reference
+    keyframe_attempts: int = 2
     project: str = "default"
 
 
@@ -115,7 +118,7 @@ class RunContext:
 
 class Harness:
     def __init__(self, home: str = ".cutroom", store: Store | None = None, providers=None, planner=None,
-                 judge=AUTO, backoff_s: float = 0.0):
+                 judge=AUTO, backoff_s: float = 0.0, images: dict | None = None):
         self.home = os.path.abspath(home)
         os.makedirs(self.home, exist_ok=True)
         self.store = store or Store(os.path.join(self.home, "cutroom.db"))
@@ -127,15 +130,19 @@ class Harness:
         self.planner = planner or default_planner()
         if self.live and not backoff_s:
             backoff_s = float(os.environ.get("CUTROOM_BACKOFF_S", "3"))  # real APIs need real pauses
-        self.registry = build_registry(self.providers, self.planner, judge, self.store, self.home, backoff_s)
+        self.images = images if images is not None else default_image_models()
+        self.registry = build_registry(self.providers, self.planner, judge, self.store, self.home, backoff_s,
+                                       self.images)
 
     def default_config(self) -> Config:
         """Settings for whatever this harness is connected to."""
+        reference = {"reference_mode": bool(self.images.get("reference")),
+                     "keyframes": bool(self.images.get("reference") and self.images.get("keyframe"))}
         if not self.live:
-            return Config(providers=list(self.providers))
+            return Config(providers=list(self.providers), **reference)
         return Config(
             name="live", providers=list(self.providers), judge=self.judge is not None, palette_check=False,
-            tool_retries=3, best_effort=True,
+            tool_retries=3, best_effort=True, **reference,
             width=848, height=480,
             budget_usd=float(os.environ.get("CUTROOM_BUDGET_USD", "3")),
             max_shot_seconds=float(os.environ.get("CUTROOM_MAX_SHOT_SECONDS", "5")),
@@ -145,7 +152,7 @@ class Harness:
     # lifecycle --------------------------------------------------------------
     def create(self, brief: str, config: Config | None = None, auto_approve: bool = False) -> str:
         cfg = config or self.default_config()
-        granted = DEFAULT_SCOPES + (["deliver:publish"] if auto_approve else [])
+        granted = DEFAULT_SCOPES + (["reference:approve", "deliver:publish"] if auto_approve else [])
         return self.store.create_run(brief, asdict(cfg), {"granted": granted, "revisions": {}})
 
     def run(self, run_id: str, crash_after: int | None = None) -> dict:
@@ -209,6 +216,23 @@ class Harness:
         self.store.save_state(run_id, state)
         self.store.emit(run_id, "feedback", shot_id, {"note": note, "remember": remember})
 
+    def redo_reference(self, run_id: str, note: str = "") -> None:
+        """Creator rejects the subject reference. A new one is drawn, approval is needed
+        again, and every shot is refilmed, since each was built on the old reference."""
+        run = self.store.get_run(run_id)
+        state = run["state"]
+        state["reference_rev"] = state.get("reference_rev", 0) + 1
+        if note:
+            state.setdefault("reference_notes", []).append(note)
+        plan = self.store.get_step(run_id, "plan")
+        keys = [s["key"] for s in self.store.steps(run_id)]
+        for shot in (plan or {}).get("shots", []):
+            if any(k.startswith((f"gen:{shot['id']}:", f"key:{shot['id']}:")) for k in keys):
+                state["revisions"].setdefault(shot["id"], {"rev": 0, "notes": []})["rev"] += 1
+        state["granted"] = [s for s in state["granted"] if s not in ("reference:approve", "deliver:publish")]
+        self.store.save_state(run_id, state)
+        self.store.emit(run_id, "feedback", "reference", {"note": note})
+
     def feedback(self, run_id: str, shot_id: str, note: str, remember: bool = False) -> dict:
         """Request a change and run it straight away, keeping any approval already given."""
         self.request_change(run_id, shot_id, note, remember, revoke_publish=False)
@@ -232,10 +256,16 @@ class Harness:
         route = ctx.step("route", "choose_models", providers=cfg.providers)
         assets = ctx.step("assets", "select_assets", mood=plan["style"]["mood"])
         noise_key = hashlib.sha256(brief.encode()).hexdigest()[:12]
+        subject_ref = self._reference(ctx, plan, run_dir) if cfg.reference_mode else None
         clips: list[str] = []
         for shot in plan["shots"]:
-            reference = clips[0] if clips else None  # later shots are judged against the first accepted one
-            clips.append(self._produce_shot(ctx, plan, route, shot, run_dir, noise_key, reference))
+            # With a subject reference every shot is judged against it, and each shot gets its own
+            # opening frame derived from it. No shot is ever filmed from the reference itself: that
+            # would make every shot open on the same picture. Without a reference, later shots are
+            # judged against the first accepted clip.
+            reference = subject_ref or (clips[0] if clips else None)
+            start = self._keyframe(ctx, plan, shot, subject_ref, run_dir) if subject_ref and cfg.keyframes else None
+            clips.append(self._produce_shot(ctx, plan, route, shot, run_dir, noise_key, reference, start))
         # the cut is identified by which clips are in it, so a changed shot means a new assemble step
         cut = hashlib.sha256("|".join(os.path.basename(c) for c in clips).encode()).hexdigest()[:8]
         final = ctx.step(f"assemble:{cut}", "assemble", clips=clips, audio=assets["audio"],
@@ -248,8 +278,56 @@ class Harness:
                 raise ShotFailed(f"final cut failed checks: {check['failures']}")
         ctx.step(f"deliver:{cut}", "deliver", path=final["path"], run_id=ctx.run_id, title=plan["title"])
 
+    def _reference(self, ctx: RunContext, plan: dict, run_dir: str) -> str:
+        """Draw the subject once, then stop until the creator approves it."""
+        rr, notes = ctx.state.get("reference_rev", 0), ctx.state.get("reference_notes", [])
+        style = plan["style"]
+        prompt = " ".join([f"{plan.get('subject', plan['title'])}.", f"Look: {style.get('look', style['mood'])}.",
+                           "The whole subject clearly visible, centred, simple uncluttered background, "
+                           "no text.", *plan.get("preferences", []), *notes])
+        ref = ctx.step(f"ref:r{rr}", "create_reference", prompt=prompt, seed=rr,
+                       out_path=os.path.join(run_dir, "stills", f"ref_r{rr}.jpg"))
+        ctx.step(f"ref_ok:r{rr}", "approve_reference", path=ref["path"])  # pauses here without the scope
+        return ref["path"]
+
+    def _keyframe(self, ctx: RunContext, plan: dict, shot: dict, subject_ref: str, run_dir: str) -> str | None:
+        """The shot's opening frame: the referenced subject placed in this shot's scene.
+        It is reviewed before any video is made from it, because a still costs a fraction
+        of a clip. If none passes, the closest is used; if none can be made, the shot is
+        filmed from text alone."""
+        cfg = ctx.cfg
+        revision = ctx.state["revisions"].get(shot["id"], {"rev": 0, "notes": []})
+        rev, style = revision["rev"], plan["style"]
+        best: list[tuple[int, str]] = []
+        hints: list[str] = []
+        for k in range(cfg.keyframe_attempts):
+            tag = f"{shot['id']}:r{rev}:k{k}"
+            prompt = " ".join([f"The same subject as in the reference image, unchanged: {plan.get('subject', '')}.",
+                               f"Scene: {shot['description'].rstrip('.')}.",
+                               f"Look: {style.get('look', style['mood'])}.", "No text.",
+                               *revision["notes"], *hints])
+            key = ctx.step(f"key:{tag}", "create_keyframe", soft=True, prompt=prompt, reference_path=subject_ref,
+                           seed=rev * 100 + k, width=cfg.width, height=cfg.height,
+                           out_path=os.path.join(run_dir, "stills", f"key_{shot['id']}_r{rev}_k{k}.jpg"))
+            if not key["ok"]:
+                continue
+            if not (cfg.evals and cfg.judge):
+                return key["path"]
+            ev = ctx.step(f"keyeval:{tag}", "evaluate_keyframe", path=key["path"], shot=shot["description"],
+                          subject=plan.get("subject", ""), look=style.get("look", ""), reference_path=subject_ref)
+            if ev["passed"]:
+                return key["path"]
+            best.append((sum(ev["judge"]["scores"].values()), key["path"]))
+            hints = ev.get("hints", [])
+            ctx.decide(f"keyeval:{tag}", action="redraw_keyframe", reason=f"failed {ev['failures']}", hints=hints)
+        if best:
+            ctx.decide(f"key:{shot['id']}:r{rev}", action="use_closest_keyframe", reason="no keyframe passed review")
+            return max(best)[1]
+        ctx.decide(f"key:{shot['id']}:r{rev}", action="film_from_text", reason="no keyframe could be made")
+        return None
+
     def _produce_shot(self, ctx: RunContext, plan: dict, route: dict, shot: dict, run_dir: str,
-                      noise_key: str, reference: str | None) -> str:
+                      noise_key: str, reference: str | None, start_image: str | None = None) -> str:
         cfg = ctx.cfg
         revision = ctx.state["revisions"].get(shot["id"], {"rev": 0, "notes": []})
         rev, attempt, hints = revision["rev"], 0, []
@@ -272,6 +350,7 @@ class Harness:
                                prompt=" ".join(context + extras), duration=shot["duration"],
                                width=cfg.width, height=cfg.height, palette=style["palette"],
                                seed=rev * 100 + attempt, shot_id=shot["id"], noise_key=noise_key,
+                               image_path=start_image,
                                out_path=os.path.join(run_dir, "clips", f"{shot['id']}_r{rev}_a{attempt}.mp4"))
                 attempt += 1
                 if not gen["ok"]:
