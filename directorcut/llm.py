@@ -7,13 +7,14 @@ import os
 import httpx
 
 from .registry import ToolFailed, TransientError
+from .settings import env
 
 API_URL = "https://api.anthropic.com/v1/messages"
 
 
 class Claude:
     def __init__(self, model: str | None = None, api_key: str | None = None, transport=None):
-        self.model = model or os.environ.get("CUTROOM_LLM_MODEL", "claude-sonnet-5-5")
+        self.model = model or env("LLM_MODEL", "claude-sonnet-5-5")
         self.api_key = api_key or os.environ.get("ANTHROPIC_API_KEY", "")
         self.transport = transport  # tests inject httpx.MockTransport here
 

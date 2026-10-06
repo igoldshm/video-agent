@@ -2,10 +2,10 @@
 import pytest
 from fastapi.testclient import TestClient
 
-from cutroom.api import create_app
-from cutroom.harness import Harness
-from cutroom.planner import HeuristicPlanner
-from cutroom.providers import MockProvider
+from directorcut.api import create_app
+from directorcut.harness import Harness
+from directorcut.planner import HeuristicPlanner
+from directorcut.providers import MockProvider
 
 BRIEF = "A calm product film for a sleep tea brand"
 
@@ -16,7 +16,7 @@ def harness(tmp_path, **providers):
 
 
 def test_creator_flow_from_brief_to_published_link(tmp_path, monkeypatch):
-    monkeypatch.setenv("CUTROOM_ACCESS_CODE", "letmein")
+    monkeypatch.setenv("DIRECTORCUT_ACCESS_CODE", "letmein")
     client = TestClient(create_app(harness(tmp_path), sync=True))
     assert client.get("/").status_code == 200 and "Describe the video you want" in client.get("/").text
     assert client.get("/api/config").json() == {"needs_code": True, "live": False, "max_seconds": 30}
@@ -56,7 +56,7 @@ def test_creator_flow_from_brief_to_published_link(tmp_path, monkeypatch):
 
 
 def test_daily_limit_stops_new_videos(tmp_path, monkeypatch):
-    monkeypatch.setenv("CUTROOM_DAILY_VIDEOS", "1")
+    monkeypatch.setenv("DIRECTORCUT_DAILY_VIDEOS", "1")
     client = TestClient(create_app(harness(tmp_path), sync=True))
     assert client.post("/api/videos", json={"brief": BRIEF}).status_code == 201
     r = client.post("/api/videos", json={"brief": BRIEF})
@@ -104,7 +104,7 @@ def test_failed_change_keeps_the_earlier_take_instead_of_losing_the_video(tmp_pa
 
 
 def test_look_is_approved_before_filming_and_each_shot_gets_its_own_opening_frame(tmp_path):
-    from cutroom.providers import MockImageModel
+    from directorcut.providers import MockImageModel
     h = Harness(str(tmp_path / "home"), providers={"fastgen": MockProvider("fastgen", 0.04)},
                 planner=HeuristicPlanner(), judge=None,
                 images={"reference": MockImageModel("ref"), "keyframe": MockImageModel("key")})

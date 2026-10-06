@@ -3,10 +3,10 @@ import os
 import pytest
 from pydantic import BaseModel
 
-from cutroom import evals
-from cutroom.harness import PRESETS, Config, Harness
-from cutroom.providers import GenRequest, MockProvider
-from cutroom.registry import PermissionRequired, Registry, Tool, ToolFailed, TransientError
+from directorcut import evals
+from directorcut.harness import PRESETS, Config, Harness
+from directorcut.providers import GenRequest, MockProvider
+from directorcut.registry import PermissionRequired, Registry, Tool, ToolFailed, TransientError
 
 BRIEF = "A 12s calm launch video for a sleep tea brand"
 PALETTE = ["#1f5f8b", "#9fd3c7"]

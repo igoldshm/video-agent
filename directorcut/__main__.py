@@ -1,17 +1,18 @@
-"""Command line: python -m cutroom <command>"""
+"""Command line: python -m directorcut <command>"""
 from __future__ import annotations
 
 import argparse
 import os
 
 from .harness import PRESETS, Harness
+from .settings import env
 
 
 def summary(h: Harness, run: dict) -> None:
     print(f"run {run['id']}  status={run['status']}  cost=${run['cost_usd']:.2f}  "
           f"steps={len(h.store.steps(run['id']))}")
     if run["status"] == "awaiting_approval":
-        print(f"  needs scope '{run['state']['pending_scope']}': python -m cutroom approve {run['id']}")
+        print(f"  needs scope '{run['state']['pending_scope']}': python -m directorcut approve {run['id']}")
     last = h.store.events(run["id"])[-1]["data"]
     if last.get("detail") and run["status"] != "awaiting_approval":
         print(f"  {last['detail']}")
@@ -21,8 +22,8 @@ def summary(h: Harness, run: dict) -> None:
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(prog="cutroom")
-    ap.add_argument("--home", default=os.environ.get("CUTROOM_HOME", ".cutroom"))
+    ap = argparse.ArgumentParser(prog="directorcut")
+    ap.add_argument("--home", default=env("HOME", ".directorcut"))
     sub = ap.add_subparsers(dest="cmd", required=True)
     p = sub.add_parser("run", help="start a run from a brief")
     p.add_argument("brief")

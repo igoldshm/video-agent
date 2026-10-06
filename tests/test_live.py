@@ -5,14 +5,14 @@ import os
 import httpx
 import pytest
 
-from cutroom import learning, media
-from cutroom.evals import VisionJudge
-from cutroom.harness import Harness
-from cutroom.llm import Claude
-from cutroom.planner import ClaudePlanner
-from cutroom.providers import GenRequest, MockProvider, ReplicateProvider
-from cutroom.registry import ToolFailed, TransientError
-from cutroom.store import Store
+from directorcut import learning, media
+from directorcut.evals import VisionJudge
+from directorcut.harness import Harness
+from directorcut.llm import Claude
+from directorcut.planner import ClaudePlanner
+from directorcut.providers import GenRequest, MockProvider, ReplicateProvider
+from directorcut.registry import ToolFailed, TransientError
+from directorcut.store import Store
 
 SCHEMA = {"latest_version": {"openapi_schema": {"components": {"schemas": {"Input": {"properties": {
     "prompt": {"type": "string"}, "seed": {"type": "integer"},
@@ -192,8 +192,8 @@ def test_refused_input_fields_are_dropped_and_the_request_retried(tmp_path, clip
 
 def test_rate_limit_waits_as_long_as_the_provider_asks(tmp_path, clip_bytes, monkeypatch):
     """Seen live: three tries inside one second against a 429, then the video failed."""
-    import cutroom.registry as registry
-    from cutroom.registry import CallInfo, Registry, Tool
+    import directorcut.registry as registry
+    from directorcut.registry import CallInfo, Registry, Tool
     from pydantic import BaseModel
 
     web = FakeWeb(clip_bytes)
@@ -238,7 +238,7 @@ def test_when_no_take_passes_review_the_closest_one_is_kept_and_flagged(tmp_path
 
 def test_reference_workflow_on_real_adapters(tmp_path, clip_bytes):
     """Reference -> approval -> a reviewed keyframe per shot -> image-to-video, against stubbed HTTP."""
-    from cutroom.providers import ReplicateImageModel
+    from directorcut.providers import ReplicateImageModel
     props = {
         "acme/t2i": {"prompt": {"type": "string"}, "aspect_ratio": {"enum": ["16:9", "1:1"]},
                      "output_format": {"enum": ["jpg", "png"]}},

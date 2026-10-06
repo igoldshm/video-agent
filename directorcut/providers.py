@@ -19,6 +19,7 @@ import httpx
 
 from . import media
 from .registry import ToolFailed, TransientError
+from .settings import env, env_float, parse_model
 
 DEFECTS = ("black", "frozen", "off_palette", "short")
 
@@ -310,21 +311,21 @@ class MockImageModel:
 def default_image_models() -> dict:
     """The still-image models, each `owner/name=price_per_image`:
 
-    CUTROOM_IMAGE_MODEL     text-to-image, draws the subject reference
-    CUTROOM_KEYFRAME_MODEL  image editing, places the referenced subject in each shot
+    DIRECTORCUT_IMAGE_MODEL     text-to-image, draws the subject reference
+    DIRECTORCUT_KEYFRAME_MODEL  image editing, places the referenced subject in each shot
 
-    Setting CUTROOM_IMAGE_MODEL turns on the reference workflow. Without the keyframe
+    Setting DIRECTORCUT_IMAGE_MODEL turns on the reference workflow. Without the keyframe
     model every shot starts from the reference image itself.
     """
     models = {"reference": None, "keyframe": None}
     if not os.environ.get("REPLICATE_API_TOKEN"):
-        if os.environ.get("CUTROOM_DEMO_REFERENCE"):  # try the workflow in demo mode with flat placeholder stills
+        if env("DEMO_REFERENCE"):  # try the workflow in demo mode with flat placeholder stills
             models = {"reference": MockImageModel("demo-reference"), "keyframe": MockImageModel("demo-keyframe")}
     else:
-        for role, var in (("reference", "CUTROOM_IMAGE_MODEL"), ("keyframe", "CUTROOM_KEYFRAME_MODEL")):
-            model, _, price = os.environ.get(var, "").strip().partition("=")
-            if model:
-                models[role] = ReplicateImageModel(model, float(price or 0.04))
+        for role, var in (("reference", "IMAGE_MODEL"), ("keyframe", "KEYFRAME_MODEL")):
+            parsed = parse_model(env(var), 0.04)
+            if parsed:
+                models[role] = ReplicateImageModel(*parsed)
     return models
 
 
@@ -341,16 +342,16 @@ def demo_providers(delay_s: float = 0.0) -> dict[str, Provider]:
 def default_providers() -> dict[str, Provider]:
     """Real models when REPLICATE_API_TOKEN is set, otherwise the simulated pair.
 
-    CUTROOM_VIDEO_MODELS is a comma-separated list of owner/name=price_per_second, in
+    DIRECTORCUT_VIDEO_MODELS is a comma-separated list of owner/name=price_per_second, in
     order of preference. The price is your estimate from the model's page and is what
     budgets are counted against.
     """
     if not os.environ.get("REPLICATE_API_TOKEN"):
-        return demo_providers(float(os.environ.get("CUTROOM_DEMO_DELAY", "0")))
+        return demo_providers(env_float("DEMO_DELAY", 0.0))
     providers: dict[str, Provider] = {}
-    for item in os.environ.get("CUTROOM_VIDEO_MODELS", DEFAULT_MODELS).split(","):
-        model, _, price = item.strip().partition("=")
-        if model:
-            p = ReplicateProvider(model, float(price or 0.05))
+    for item in env("VIDEO_MODELS", DEFAULT_MODELS).split(","):
+        parsed = parse_model(item, 0.05)
+        if parsed:
+            p = ReplicateProvider(*parsed)
             providers[p.name] = p
     return providers

@@ -21,6 +21,7 @@ from pydantic import BaseModel, Field
 
 from .harness import Harness
 from .trace import render
+from .settings import env, env_float
 
 STATIC = os.path.join(os.path.dirname(__file__), "static")
 STAGES = {"plan_video": "Planning your shots", "choose_models": "Setting things up",
@@ -168,12 +169,12 @@ def creator_view(h: Harness, run: dict) -> dict:
 
 
 def create_app(harness: Harness | None = None, sync: bool = False) -> FastAPI:
-    h = harness or Harness(os.environ.get("CUTROOM_HOME", ".cutroom"))
-    jobs = Jobs(int(os.environ.get("CUTROOM_WORKERS", "2")), sync)
-    access_code = os.environ.get("CUTROOM_ACCESS_CODE", "")
-    daily_videos = int(os.environ.get("CUTROOM_DAILY_VIDEOS", "20"))
-    daily_usd = float(os.environ.get("CUTROOM_DAILY_USD", "15"))
-    app = FastAPI(title="cutroom", docs_url="/ops/docs", redoc_url=None, openapi_url="/ops/openapi.json")
+    h = harness or Harness(env("HOME", ".directorcut"))
+    jobs = Jobs(int(env("WORKERS", "2")), sync)
+    access_code = env("ACCESS_CODE", "")
+    daily_videos = int(env("DAILY_VIDEOS", "20"))
+    daily_usd = env_float("DAILY_USD", 15.0)
+    app = FastAPI(title="DirectorCut AI", docs_url="/ops/docs", redoc_url=None, openapi_url="/ops/openapi.json")
 
     def guard(x_access_code: str | None = Header(default=None)) -> None:
         if access_code and not hmac.compare_digest(x_access_code or "", access_code):

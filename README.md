@@ -1,4 +1,6 @@
-# Cutroom
+# DirectorCut AI
+
+A director agent for AI video creation.
 
 Describe a video in a sentence or two and get a finished short video back. An agent
 plans the shots, generates each one with a text-to-video model, reviews the result,
@@ -20,7 +22,7 @@ brief ─ plan ─ choose models ─ pick assets ─┬─ shot 1: generate ─ 
   subject, a look and a shot list. Subject, look and the creator's standing notes go
   into every generation prompt and to the judge, so shot 4 belongs to the same video as shot 1.
 - **Tools.** Each capability is a typed tool with the permission scope it needs
-  (`cutroom/tools.py`, `cutroom/registry.py`). Transient provider errors are retried
+  (`directorcut/tools.py`, `directorcut/registry.py`). Transient provider errors are retried
   with backoff; a model that keeps failing is left for the next one.
 - **State.** Every tool call is checkpointed in SQLite under a stable key such as
   `gen:s2:r1:a0` (shot 2, revision 1, attempt 0). Resuming a video replays what is
@@ -41,7 +43,7 @@ brief ─ plan ─ choose models ─ pick assets ─┬─ shot 1: generate ─ 
 - **Learning.** Eval results are kept per model. Once there is enough history, models
   are tried in order of expected cost per accepted clip, and an issue a model keeps
   being rejected for becomes a standing instruction in every prompt sent to it
-  (`cutroom/learning.py`). A creator's change request can be remembered and applied to
+  (`directorcut/learning.py`). A creator's change request can be remembered and applied to
   their later videos.
 - **Permissions and limits.** Publishing needs the `deliver:publish` scope, granted
   when the creator presses Publish; changing a shot withdraws it. Each video has a
@@ -57,7 +59,7 @@ Python 3.11+ and ffmpeg.
 ```bash
 pip install -e ".[dev]"
 pytest
-python -m cutroom serve            # http://localhost:8000
+python -m directorcut serve            # http://localhost:8000
 ```
 
 Without API keys the app runs in **demo mode**: two simulated models render
@@ -70,15 +72,18 @@ To use real models, copy `.env.example` to `.env`, fill it in and export it:
 |---|---|
 | `REPLICATE_API_TOKEN` | Turns on real video generation through Replicate |
 | `ANTHROPIC_API_KEY` | Turns on the LLM planner and the vision judge |
-| `CUTROOM_VIDEO_MODELS` | `owner/name=price_per_second,...` in order of preference |
-| `CUTROOM_IMAGE_MODEL` | Optional `owner/name=price_per_image`. Turns on the subject reference and its approval step |
-| `CUTROOM_KEYFRAME_MODEL` | Optional `owner/name=price_per_image`. An image-editing model that takes a reference image; gives each shot its own opening frame |
-| `CUTROOM_ACCESS_CODE` | Required to make videos. Set it on anything public |
-| `CUTROOM_BUDGET_USD`, `CUTROOM_DAILY_USD`, `CUTROOM_DAILY_VIDEOS` | Spend limits |
-| `CUTROOM_MAX_SECONDS`, `CUTROOM_MAX_SHOT_SECONDS` | Length limits |
-| `CUTROOM_HOME` | Where the database and media live |
+| `DIRECTORCUT_VIDEO_MODELS` | `owner/name=price_per_second,...` in order of preference |
+| `DIRECTORCUT_IMAGE_MODEL` | Optional `owner/name=price_per_image`. Turns on the subject reference and its approval step |
+| `DIRECTORCUT_KEYFRAME_MODEL` | Optional `owner/name=price_per_image`. An image-editing model that takes a reference image; gives each shot its own opening frame |
+| `DIRECTORCUT_ACCESS_CODE` | Required to make videos. Set it on anything public |
+| `DIRECTORCUT_BUDGET_USD`, `DIRECTORCUT_DAILY_USD`, `DIRECTORCUT_DAILY_VIDEOS` | Spend limits |
+| `DIRECTORCUT_MAX_SECONDS`, `DIRECTORCUT_MAX_SHOT_SECONDS` | Length limits |
+| `DIRECTORCUT_HOME` | Where the database and media live |
 
-The prices in `CUTROOM_VIDEO_MODELS` are your own estimates from each model's page.
+Settings are also accepted under the earlier `CUTROOM_` prefix, so an existing deployment keeps
+working unchanged.
+
+The prices in `DIRECTORCUT_VIDEO_MODELS` are your own estimates from each model's page.
 Budgets are counted against them, so set them before trusting a budget. LLM calls are
 not counted in the budget.
 
@@ -91,7 +96,7 @@ The repository has a `Dockerfile` and a Render blueprint (`render.yaml`).
 
 1. Push this repository to GitHub.
 2. In Render: New, Blueprint, select the repository.
-3. Fill in `CUTROOM_ACCESS_CODE`, `REPLICATE_API_TOKEN` and `ANTHROPIC_API_KEY`.
+3. Fill in `DIRECTORCUT_ACCESS_CODE`, `REPLICATE_API_TOKEN` and `ANTHROPIC_API_KEY`.
 4. Open the service URL and enter the access code.
 
 The blueprint mounts a persistent disk at `/data`. Without one, videos and history are
@@ -100,17 +105,17 @@ lost on every deploy. Any host that runs a container with a mounted volume works
 ## Command line
 
 ```bash
-python -m cutroom run "A 12s calm film about a sleep tea" --crash-after 6
-python -m cutroom resume <id>      # continues from the checkpoint
-python -m cutroom approve <id>
-python -m cutroom feedback <id> s2 "Slower, warmer light." --remember
-python -m cutroom trace <id>       # writes an HTML trace
-python -m cutroom bench
+python -m directorcut run "A 12s calm film about a sleep tea" --crash-after 6
+python -m directorcut resume <id>      # continues from the checkpoint
+python -m directorcut approve <id>
+python -m directorcut feedback <id> s2 "Slower, warmer light." --remember
+python -m directorcut trace <id>       # writes an HTML trace
+python -m directorcut bench
 ```
 
 ## Benchmark of the harness logic
 
-`python -m cutroom bench` runs twelve fixed briefs through three configurations using
+`python -m directorcut bench` runs twelve fixed briefs through three configurations using
 the **simulated** models, which draw their failures from the brief so every
 configuration faces the same ones. A delivery is clean when every clip in it passes
 all checks, measured afterwards for all three.
@@ -135,5 +140,5 @@ says nothing about any real model.
 - If no take of a shot passes review, the closest one is kept and flagged to the creator;
   a change request that cannot be made keeps the take it was meant to replace.
 - Known limits: one process with a thread pool and SQLite; one shared access code
-  instead of accounts; videos are silent unless you add music to `$CUTROOM_HOME/assets/library.json`;
+  instead of accounts; videos are silent unless you add music to `$DIRECTORCUT_HOME/assets/library.json`;
   the judge sees three frames per clip, so it can miss problems between them.

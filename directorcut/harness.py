@@ -20,6 +20,7 @@ from .providers import default_image_models, default_providers
 from .registry import PermissionRequired, Registry, ToolFailed
 from .store import Store
 from .tools import build_registry
+from .settings import env_float
 
 DEFAULT_SCOPES = ["plan", "assets:read", "generate", "evaluate", "media:process"]
 AUTO = object()
@@ -117,11 +118,11 @@ class RunContext:
 
 
 class Harness:
-    def __init__(self, home: str = ".cutroom", store: Store | None = None, providers=None, planner=None,
+    def __init__(self, home: str = ".directorcut", store: Store | None = None, providers=None, planner=None,
                  judge=AUTO, backoff_s: float = 0.0, images: dict | None = None):
         self.home = os.path.abspath(home)
         os.makedirs(self.home, exist_ok=True)
-        self.store = store or Store(os.path.join(self.home, "cutroom.db"))
+        self.store = store or Store(self._database_path())
         self.providers = providers or default_providers()
         self.live = not all(p.simulated for p in self.providers.values())
         if judge is AUTO:  # the judge needs real footage to look at, and a key to look with
@@ -129,10 +130,15 @@ class Harness:
         self.judge = judge
         self.planner = planner or default_planner()
         if self.live and not backoff_s:
-            backoff_s = float(os.environ.get("CUTROOM_BACKOFF_S", "3"))  # real APIs need real pauses
+            backoff_s = env_float("BACKOFF_S", 3.0)  # real APIs need real pauses
         self.images = images if images is not None else default_image_models()
         self.registry = build_registry(self.providers, self.planner, judge, self.store, self.home, backoff_s,
                                        self.images)
+
+    def _database_path(self) -> str:
+        """A data directory created under the project's earlier name keeps its database."""
+        current, legacy = os.path.join(self.home, "directorcut.db"), os.path.join(self.home, "cutroom.db")
+        return legacy if os.path.exists(legacy) and not os.path.exists(current) else current
 
     def default_config(self) -> Config:
         """Settings for whatever this harness is connected to."""
@@ -144,9 +150,9 @@ class Harness:
             name="live", providers=list(self.providers), judge=self.judge is not None, palette_check=False,
             tool_retries=3, best_effort=True, **reference,
             width=848, height=480,
-            budget_usd=float(os.environ.get("CUTROOM_BUDGET_USD", "3")),
-            max_shot_seconds=float(os.environ.get("CUTROOM_MAX_SHOT_SECONDS", "5")),
-            max_total_seconds=float(os.environ.get("CUTROOM_MAX_SECONDS", "15")),
+            budget_usd=env_float("BUDGET_USD", 3.0),
+            max_shot_seconds=env_float("MAX_SHOT_SECONDS", 5.0),
+            max_total_seconds=env_float("MAX_SECONDS", 15.0),
         )
 
     # lifecycle --------------------------------------------------------------

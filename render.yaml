@@ -1,3 +1,6 @@
+# The service and its settings keep their original names on purpose: renaming them here would make
+# Render create a second service with an empty disk. The app accepts every setting below under the
+# DIRECTORCUT_ prefix as well.
 # Render blueprint: New > Blueprint, pick this repository, fill in the secrets.
 services:
   - type: web

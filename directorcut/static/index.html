@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Cutroom</title>
+<title>DirectorCut AI</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Figtree:wght@400;500;600&family=Syne:wght@600;700&display=swap">
 <style>
@@ -101,7 +101,7 @@ footer{font-size:13px;color:var(--mute)}
 <body>
 <div class="wrap">
   <header>
-    <a class="mark" href="#">Cut<i>room</i></a>
+    <a class="mark" href="#">Director<i>Cut</i> AI</a>
     <button class="quiet" id="nav-home" hidden>All videos</button>
   </header>
 
@@ -117,7 +117,7 @@ footer{font-size:13px;color:var(--mute)}
   <main class="stack" id="home" hidden style="gap:32px">
     <div class="stack">
       <h1>Describe the video you want.</h1>
-      <p class="mute">One or two sentences. Cutroom plans the shots, films each one, checks them and cuts them together.</p>
+      <p class="mute">One or two sentences. DirectorCut plans the shots, films each one, checks them and cuts them together.</p>
     </div>
     <form class="card compose stack" id="compose">
       <textarea id="brief" maxlength="600" aria-label="Describe your video" placeholder="A calm morning routine with a ceramic pour-over coffee set, soft window light"></textarea>
@@ -152,7 +152,9 @@ const store = {
   get(k, d){ try { const v = localStorage.getItem(k); return v === null ? d : JSON.parse(v); } catch { return d; } },
   set(k, v){ try { localStorage.setItem(k, JSON.stringify(v)); } catch {} },
 };
-let code = store.get("cutroom.code", ""), ids = store.get("cutroom.ids", []), config = {max_seconds: 15, live: true};
+// read what this browser saved under the app's earlier name, so nobody loses their videos
+let code = store.get("directorcut.code", store.get("cutroom.code", "")),
+    ids = store.get("directorcut.ids", store.get("cutroom.ids", [])), config = {max_seconds: 15, live: true};
 let timer = null, lastView = "";
 
 async function api(path, body){
@@ -199,7 +201,7 @@ $("compose").onsubmit = async e => {
   try {
     const seconds = +document.querySelector("#lengths input:checked").value;
     const v = await api("/api/videos", {brief, seconds});
-    ids = [v.id, ...ids].slice(0, 30); store.set("cutroom.ids", ids);
+    ids = [v.id, ...ids].slice(0, 30); store.set("directorcut.ids", ids);
     $("brief").value = ""; location.hash = "v/" + v.id;
   } catch (x){ err.textContent = x.message; }
   $("create").disabled = false;
@@ -289,7 +291,7 @@ $("nav-home").onclick = () => { location.hash = ""; };
 window.addEventListener("hashchange", () => { lastView = ""; route(); });
 $("gate-form").onsubmit = async e => {
   e.preventDefault(); code = $("code").value.trim();
-  try { await api("/api/session", {}); store.set("cutroom.code", code); $("gate-error").textContent = ""; route(); }
+  try { await api("/api/session", {}); store.set("directorcut.code", code); $("gate-error").textContent = ""; route(); }
   catch { $("gate-error").textContent = "That code isn't right. Check it and try again."; }
 };
 const EXAMPLES = ["A golden retriever puppy discovering snow for the first time, warm morning light",
